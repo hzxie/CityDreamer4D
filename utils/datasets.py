@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-08 15:11:36
+# @Last Modified at: 2024-07-08 20:44:13
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -93,7 +93,7 @@ class CityDataset(torch.utils.data.Dataset):
 
         return np.array(utils.io.IO.get(file_path).convert("P"))
 
-    def _get_footprint_bboxes(self, file_path):
+    def _get_building_stats(self, file_path):
         if file_path in self.memcached:
             return self.memcached[file_path]
 
@@ -114,8 +114,8 @@ class CityDataset(torch.utils.data.Dataset):
                     self.memcached[v] = self._get_height_field(v, cfg)
                 elif k == "seg":
                     self.memcached[v] = self._get_seg_layout(v)
-                elif k == "footprint_bboxes":
-                    self.memcached[v] = self._get_footprint_bboxes(v)
+                elif k == "building_stats":
+                    self.memcached[v] = self._get_building_stats(v)
 
     def _get_transformations(
         self, cfg, bev_crop_size, img_crop_size, instances=None, semantic_classes={}
@@ -128,7 +128,9 @@ class CityDataset(torch.utils.data.Dataset):
                     "height": bev_crop_size,
                     "width": bev_crop_size,
                 },
-                # "objects": ["hf", "seg", "cam_origin"],
+                # "img_center" is the center of the BEV image (compatible with CityDreamer)
+                # Additional data with keys "img_center", "building_stats" used in BevCrop.
+                "objects": ["hf", "seg"],
             },
             "RandomCrop": {
                 "callback": "RandomCrop",
@@ -243,6 +245,7 @@ class GoogleEarthDataset(CityDataset):
     def _get_data_transform(self, split, tr):
         return utils.transforms.Compose(
             [
+                tr["BevCrop"],
                 tr["RandomCrop" if split == "train" else "CenterCrop"],
                 tr["InstanceToSemantic"],
                 tr["ToOneHot"],
@@ -294,6 +297,7 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
         return utils.transforms.Compose(
             [
                 tr["RandomInstances"],
+                tr["BevCrop"],
                 tr["MaskRaydirs"],
                 tr["InstanceCrop"],
                 tr["InstanceToSemantic"],
@@ -344,7 +348,7 @@ class CitySampleDataset(CityDataset):
                     "%sSequence.%04d.jpeg" % (c, i),
                 ),
                 "raycasting": os.path.join(cfg.DIR, c, "Raycasting", "%04d.pkl" % i),
-                "footprint_bboxes": os.path.join(cfg.DIR, c, "Footprints.pkl"),
+                "building_stats": os.path.join(cfg.DIR, c, "Footprints.pkl"),
             }
             for c in cities
             for i in range(cfg.N_VIEWS)

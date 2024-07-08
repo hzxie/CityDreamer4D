@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-08 15:09:37
+# @Last Modified at: 2024-07-08 19:56:07
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -19,7 +19,7 @@ cfg                                             = __C
 cfg.DATASETS                                     = EasyDict()
 cfg.DATASETS.CITY_SAMPLE                         = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.DIR                     = "./data"
-cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "footprint_bboxes"]
+cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "building_stats"]
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
 cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 384
 cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5

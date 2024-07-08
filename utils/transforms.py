@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-08 15:30:59
+# @Last Modified at: 2024-07-08 20:46:19
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -103,7 +103,7 @@ class RandomCrop(object):
             offset_y = min(max(0, cy - patch_h // 2), image_h - patch_h)
         else:
             raise ValueError("Invalid mode: {}".format(self.mode))
-        
+
         return offset_x, offset_y
 
     def _get_offset(self, size, crop_size):
@@ -113,7 +113,7 @@ class RandomCrop(object):
             return np.random.randint(0, size - crop_size - 1)
         elif self.mode == "center":
             return size // 2 - crop_size // 2
-        
+
     def _get_instance_bbox(self, ins_mask):
         # https://github.com/hzxie/CityDreamer/blob/master/utils/transforms.py?ref_type=heads#L138
         pts = cv2.findNonZero(ins_mask.astype(np.uint8))
@@ -165,22 +165,49 @@ class RandomCrop(object):
 
 class BevResize(object):
     def __init__(self, parameters, objects):
-        self.parameters = parameters
+        self.height = parameters["height"]
+        self.width = parameters["width"]
         self.objects = objects
 
+    def _get_resized_img(self, img, width, height):
+        return cv2.resize(img, (width, height))
+
     def __call__(self, data):
-        # TODO
-        pass
+        for k in self.objects:
+            data[k] = self._get_resized_img(data[k], self.width, self.height)
+
+        return data
 
 
 class BevCrop(object):
     def __init__(self, parameters, objects):
-        self.parameters = parameters
+        self.height = parameters["height"]
+        self.width = parameters["width"]
         self.objects = objects
 
+    def _get_img_patch(self, img, cx, cy, half_width, half_height):
+        tl_x, br_x = cx - half_width, cx + half_width
+        tl_y, br_y = cy - half_height, cy + half_height
+        return img[tl_y:br_y, tl_x:br_x]
+
     def __call__(self, data):
-        # TODO
-        pass
+        # In instance mode, the center is determined by the cx, cy of the instance.
+        # Otherwise, the center is determined by the camera position / look at position.
+        instance_mode = "inst" in data
+        cx, cy = data["img_center"]["cx"], data["img_center"]["cy"]
+        if instance_mode:
+            assert type(data["inst"]) == list
+            inst = data["inst"][0]
+            # https://github.com/hzxie/city-dreamer/blob/master/utils/datasets.py?ref_type=heads#L489
+            dx, dy, w, h = data["building_stats"][inst]
+            data["building_stat"] = torch.Tensor([dy, dx, h, w, inst])
+            cx += data["building_stat"][1]
+            cy += data["building_stat"][0]
+
+        for k in self.objects:
+            data[k] = self._get_img_patch(data[k], cx, cy, self.width // 2, self.height // 2)
+
+        return data
 
 
 class InstanceToSemantic(object):
