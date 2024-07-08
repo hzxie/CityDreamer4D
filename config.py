@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-01-22 20:02:27
+# @Last Modified at: 2024-07-08 15:09:37
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -19,23 +19,22 @@ cfg                                             = __C
 cfg.DATASETS                                     = EasyDict()
 cfg.DATASETS.CITY_SAMPLE                         = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.DIR                     = "./data"
-cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg"]
+cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "footprint_bboxes"]
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
-cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
-cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
-cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 1536
 cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 384
 cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5
 cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000
+cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
+cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"CAR": 3, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
+cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
+cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 1536
+cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
 cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]
-cfg.DATASETS.CITY_SAMPLE_BUILDING                = EasyDict()
-cfg.DATASETS.CITY_SAMPLE_BUILDING.PIN_MEMORY     = ["hf", "seg", "footprint_bboxes"]
-cfg.DATASETS.CITY_SAMPLE_BUILDING.N_REPEAT       = 1
-cfg.DATASETS.CITY_SAMPLE_BUILDING.N_MIN_PIXELS   = 64
-cfg.DATASETS.CITY_SAMPLE_BUILDING.FACADE_CLS_ID  = 7
-cfg.DATASETS.CITY_SAMPLE_BUILDING.ROOF_CLS_ID    = 8
-cfg.DATASETS.CITY_SAMPLE_BUILDING.INS_ID_RANGE   = [100, 5000]
-cfg.DATASETS.CITY_SAMPLE_BUILDING.VOL_SIZE       = 672
+cfg.DATASETS.CITY_SAMPLE.BLDG                    = EasyDict()
+cfg.DATASETS.CITY_SAMPLE.BLDG.VOL_SIZE           = 672
+cfg.DATASETS.CITY_SAMPLE.BLDG.INS_RANGE          = [100, 5000]
+cfg.DATASETS.CITY_SAMPLE.CAR                     = EasyDict()
+cfg.DATASETS.CITY_SAMPLE.CAR.INS_RANGE           = [5000, 16384]
 
 #
 # Constants

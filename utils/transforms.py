@@ -4,12 +4,11 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-01-22 20:01:03
+# @Last Modified at: 2024-07-08 15:30:59
 # @Email:  root@haozhexie.com
 
 import cv2
 import numpy as np
-import random
 import torch
 
 import utils.helpers
@@ -56,50 +55,30 @@ class ToTensor(object):
         return data
 
 
-class RandomFlip(object):
+class RandomInstances(object):
+    """Randomly select an instance (buildings or cars) from the visible instances."""
+
     def __init__(self, parameters, objects):
-        self.hflip = parameters["hflip"] if parameters else True
-        self.vflip = parameters["vflip"] if parameters else True
+        self.instances = parameters["instances"] if "instances" in parameters else None
+        # NOTE: For BLDG, the roof instance is the next to the facade instance, i.e., cont_instances = 1.
+        self.cont_instances = (
+            parameters["cont_instances"] if "cont_instances" in parameters else []
+        )
         self.objects = objects
 
-    def _random_flip(self, img, hflip, vflip):
-        if hflip:
-            img = np.flip(img, axis=1)
-        if vflip:
-            img = np.flip(img, axis=0)
-
-        return img.copy()
-
     def __call__(self, data):
-        hflip = True if random.random() <= 0.5 and self.hflip else False
-        vflip = True if random.random() <= 0.5 and self.vflip else False
-        for k, v in data.items():
-            if k in self.objects:
-                data[k] = self._random_flip(v, hflip, vflip)
+        ins_map = data["voxel_id"] * data["msk"]
+        visible_ins = np.unique(np.isin(ins_map, self.instances))
 
-        return data
+        if len(visible_ins) == 0:
+            return data
 
+        data["inst"] = [np.random.choice(visible_ins)]
+        for ci in self.cont_instances:
+            data["inst"].append(data["inst"][0] + ci)
 
-class CenterCrop(object):
-    def __init__(self, parameters, objects):
-        self.height = parameters["height"]
-        self.width = parameters["width"]
-        self.objects = objects
-
-    def _center_crop(self, img):
-        h, w = img.shape[0], img.shape[1]
-        offset_x = w // 2 - self.width // 2
-        offset_y = h // 2 - self.height // 2
-        new_img = img[
-            offset_y : offset_y + self.height, offset_x : offset_x + self.width
-        ]
-        return new_img
-
-    def __call__(self, data):
-        for k, v in data.items():
-            if k in self.objects:
-                data[k] = self._center_crop(v)
-
+        ins_mask = np.isin(data["voxel_id"], data["inst"])
+        data["msk"] &= ins_mask
         return data
 
 
@@ -107,151 +86,160 @@ class RandomCrop(object):
     def __init__(self, parameters, objects):
         self.height = parameters["height"]
         self.width = parameters["width"]
-        self.key = parameters["key"] if "key" in parameters else None
-        self.values = parameters["values"] if "values" in parameters else []
+        self.mode = parameters["mode"] if "mode" in parameters else "random"
         self.n_min_pixels = (
             parameters["n_min_pixels"] if "n_min_pixels" in parameters else 0
         )
         self.objects = objects
 
-    def _crop(self, img, offset_x, offset_y):
-        new_img = None
-        new_img = img[
-            offset_y : offset_y + self.height, offset_x : offset_x + self.width
-        ]
-        return new_img
+    def _get_offsets(self, image_w, image_h, patch_w, patch_h, data):
+        if self.mode in ["random", "center"]:
+            offset_x = self._get_offset(image_w, patch_w)
+            offset_y = self._get_offset(image_h, patch_h)
+        elif self.mode == "instance":
+            x, y = self._get_instance_bbox(data["voxel_id"][..., 0, 0] == data["inst"])
+            cx, cy = np.random.randint(x[0], x[1]), np.random.randint(y[0], y[1])
+            offset_x = min(max(0, cx - patch_w // 2), image_w - patch_w)
+            offset_y = min(max(0, cy - patch_h // 2), image_h - patch_h)
+        else:
+            raise ValueError("Invalid mode: {}".format(self.mode))
+        
+        return offset_x, offset_y
 
-    def __call__(self, data):
-        N_MAX_TRY_TIMES = 100
-        img = data[self.objects[0]]
-        h, w = img.shape[0], img.shape[1]
-
-        # Check the cropped patch contains enough informative pixels for training
-        n_try_times = 0
-        while n_try_times < N_MAX_TRY_TIMES:
-            n_try_times += 1
-            offset_x = random.randint(0, w - self.width)
-            offset_y = random.randint(0, h - self.height)
-            if self.key is None:
-                break
-            patch = self._crop(data[self.key], offset_x, offset_y)
-            n_pixels = np.count_nonzero(np.isin(patch, self.values))
-            if n_pixels >= self.n_min_pixels:
-                break
-
-        # Crop all data fields simultaneously
-        for k, v in data.items():
-            if k in self.objects:
-                data[k] = self._crop(v, offset_x, offset_y)
-
-        return data
-
-
-class RandomCropTarget(RandomCrop):
-    def __init__(self, parameters, objects):
-        super(RandomCropTarget, self).__init__(parameters, objects)
-        self.VOXEL_ID_KEY = "voxel_id"
-        self.target_value = parameters["target_value"]
-        self.objects = objects
-
-    def _get_target_bbox(self, voxel_id, target_value):
-        mask = voxel_id[..., 0, 0] == target_value
-        pts = cv2.findNonZero(mask.astype(np.uint8))
+    def _get_offset(self, size, crop_size):
+        if size == crop_size:
+            return 0
+        elif self.mode == "random":
+            return np.random.randint(0, size - crop_size - 1)
+        elif self.mode == "center":
+            return size // 2 - crop_size // 2
+        
+    def _get_instance_bbox(self, ins_mask):
+        # https://github.com/hzxie/CityDreamer/blob/master/utils/transforms.py?ref_type=heads#L138
+        pts = cv2.findNonZero(ins_mask.astype(np.uint8))
         x_min, x_max = np.min(pts[..., 0]), np.max(pts[..., 0])
         y_min, y_max = np.min(pts[..., 1]), np.max(pts[..., 1])
         return (x_min, x_max), (y_min, y_max)
 
-    def __call__(self, data):
-        img = data[self.objects[0]]
-        h, w = img.shape[0], img.shape[1]
-        x, y = self._get_target_bbox(data[self.VOXEL_ID_KEY], self.target_value)
-        cx, cy = random.randint(x[0], x[1]), random.randint(y[0], y[1])
-        offset_x = min(max(0, cx - self.width // 2), w - self.width)
-        offset_y = min(max(0, cy - self.height // 2), h - self.height)
+    def _get_img_patch(self, img, offset_x, offset_y):
+        return img[offset_y : offset_y + self.height, offset_x : offset_x + self.width]
 
+    def _get_crop_position(self, data, width, height):
+        N_MAX_TRY_TIMES = 100
+        img = data[self.objects[0]]
+        ih, iw = img.shape[0], img.shape[1]
+        # Check the cropped patch contains enough informative pixels for training
+        for _ in range(N_MAX_TRY_TIMES):
+            offset_x, offset_y = self._get_offsets(iw, ih, width, height, data)
+            mask = self._get_img_patch(data["msk"], offset_x, offset_y)
+
+            n_pixels = np.count_nonzero(mask)
+            if n_pixels >= self.n_min_pixels:
+                if self.n_max_points == 0 and self.n_min_points == 0:
+                    break
+
+        return offset_x, offset_y, mask
+
+    def __call__(self, data):
+        width, height = self.width, self.height
+        offset_x, offset_y = None, None
+        while offset_x is None or offset_y is None:
+            offset_x, offset_y, mask = self._get_crop_position(data, width, height)
+
+        # Crop all data fields simultaneously
+        data["crp"] = {
+            "x": offset_x,
+            "y": offset_y,
+            "w": self.width,
+            "h": self.height,
+        }
         for k, v in data.items():
+            if k == "msk":
+                # Prevent duplicated computation
+                data[k] = mask
             if k in self.objects:
-                data[k] = self._crop(v, offset_x, offset_y)
+                data[k] = self._get_img_patch(v, offset_x, offset_y)
+
         return data
 
 
-class CenterCropTarget(RandomCropTarget):
+class BevResize(object):
     def __init__(self, parameters, objects):
-        super(CenterCropTarget, self).__init__(parameters, objects)
-
-    def __call__(self, data):
-        img = data[self.objects[0]]
-        h, w = img.shape[0], img.shape[1]
-        x, y = self._get_target_bbox(data[self.VOXEL_ID_KEY], self.target_value)
-        cx, cy = (x[0] + x[1]) // 2, (y[0] + y[1]) // 2
-        offset_x = min(max(0, cx - self.width // 2), w - self.width)
-        offset_y = min(max(0, cy - self.height // 2), h - self.height)
-
-        for k, v in data.items():
-            if k in self.objects:
-                data[k] = self._crop(v, offset_x, offset_y)
-        return data
-
-
-class BuildingMaskRemap(object):
-    def __init__(self, parameters, objects):
-        self.attr = parameters["attr"] if "attr" in parameters else None
-        self.bldg_facade_label = parameters["bldg_facade_label"]
-        self.bldg_roof_label = parameters["bldg_roof_label"]
-        self.bldg_ins_range = parameters["bldg_ins_range"]
+        self.parameters = parameters
         self.objects = objects
 
-    def _building_mask_remap(self, seg_map, value_map):
-        rest_bldg_ins = 0
-        if value_map is not None:
-            # BLDG MODE
-            # value_map maps specific building instance to its semantic label
-            for src, dst in value_map.items():
-                seg_map[seg_map == src] = dst
-        else:
-            # BG MODE
-            rest_bldg_ins = self.bldg_facade_label
+    def __call__(self, data):
+        # TODO
+        pass
 
-        # The other building instances are mapping to rest_bldg_ins
-        # rest_bldg_ins is set to building facade sementic label in BG mode,
-        # it is set to NULL in BLDG mode.
-        seg_map[
-            (seg_map >= self.bldg_ins_range[0]) & (seg_map < self.bldg_ins_range[1])
-        ] = rest_bldg_ins
-        return seg_map
+
+class BevCrop(object):
+    def __init__(self, parameters, objects):
+        self.parameters = parameters
+        self.objects = objects
 
     def __call__(self, data):
+        # TODO
+        pass
+
+
+class InstanceToSemantic(object):
+    def __init__(self, parameters, objects):
+        self.semantic_classes = parameters["semantic_classes"]
+        self.min_instances = parameters["min_instances"]
+        self.objects = objects
+
+    def _instances_to_semantic(self, ins_map, mapper):
+        if mapper is not None:
+            # Instance Mode: the specific building instance are mapped to its semantic label
+            for src, dst in mapper.items():
+                ins_map[ins_map == src] = dst
+            # The rest instances are set to NULL
+            ins_map[ins_map >= self.min_instances] = 0
+        else:
+            # Background Mode: all instances are set to their semantic classes.
+            for sc in self.semantic_classes.values():
+                selector = (ins_map >= sc["cond"]["range"][0]) & (
+                    ins_map < sc["cond"]["range"][1]
+                )
+                ins_map[selector] = sc["smtc"]
+
+        return ins_map
+
+    def __call__(self, data):
+        # In instance mode, only the selected instance is kept. The rest are set to NULL.
+        # Otherwise, all instances are set to their semantic classes.
+        instance_mode = "inst" in data
+        mapper = None
+        if instance_mode:
+            assert type(data["inst"]) == list
+            mapper = {}
+            for i in data["inst"].values():
+                for sc in self.semantic_classes.values():
+                    if (
+                        i >= sc["cond"]["range"][0]
+                        and i < sc["cond"]["range"][1]
+                        and sc["cond"]["cond"](i)
+                    ):
+                        mapper[i] = sc["smtc"]
+
         for k, v in data.items():
             if k in self.objects:
-                bldg_ins_id = data[self.attr] if self.attr in data else None
-                value_map = (
-                    {
-                        bldg_ins_id: self.bldg_facade_label,
-                        bldg_ins_id + 1: self.bldg_roof_label,
-                    }
-                    if bldg_ins_id is not None
-                    else None
-                )
-                data[k] = self._building_mask_remap(
-                    v,
-                    value_map,
-                )
+                data[k] = self._instances_to_semantic(v, mapper)
 
         return data
 
 
 class MaskRaydirs(object):
-    def __init__(self, parameters, objects=None):
-        self.VOXEL_ID_KEY = "voxel_id"
-        self.RAYDIR_KEY = "raydirs"
-        self.attr = parameters["attr"]
-        self.values = parameters["values"]
+    def __init__(self, parameters, objects):
+        self.parameters = parameters
         self.objects = objects
 
     def __call__(self, data):
-        seg_map = data[self.VOXEL_ID_KEY][..., 0, 0]
-        mask = np.isin(seg_map, self.values)
-        data[self.RAYDIR_KEY][~mask] = 0
+        assert "inst" in data, "RandomInstance should be executed before MaskRaydirs."
+        seg_map = data["voxel_id"][..., 0, 0]
+        mask = np.isin(seg_map, data["inst"])
+        data["raydirs"][~mask] = 0
         return data
 
 
