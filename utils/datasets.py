@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-08 20:44:13
+# @Last Modified at: 2024-07-11 19:34:03
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -56,7 +56,7 @@ class CityDataset(torch.utils.data.Dataset):
         self.memcached = {}
         self.renderings = []
         self.n_renderings = 0
-        self.transform = None
+        self.transforms = None
 
     def __len__(self):
         return (
@@ -67,17 +67,11 @@ class CityDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         rendering = self.renderings[idx % self.n_renderings]
-        data = {
-            "hf": self._get_height_field(rendering["hf"], self.cfg),
-            "seg": self._get_seg_layout(rendering["seg"]),
-            "footage": self._get_footage_img(rendering["footage"]),
-        }
-        raycasting = utils.io.IO.get(rendering["raycasting"])
-        data["voxel_id"] = raycasting["voxel_id"]
-        data["depth2"] = raycasting["depth2"]
-        data["raydirs"] = raycasting["raydirs"]
-        data["cam_origin"] = raycasting["cam_origin"]
-        data["mask"] = raycasting["mask"]
+        data = utils.io.IO.get(rendering["raycasting"])
+        # print(data.keys())    # dict_keys(['voxel_id', 'depth2', 'raydirs', 'cam_origin', 'img_center', 'mask'])
+        data["hf"] = self._get_height_field(rendering["hf"], self.cfg)
+        data["seg"] = self._get_seg_layout(rendering["seg"])
+        data["footage"] = self._get_footage_img(rendering["footage"])
         data = self.transforms(data)
         return data
 
@@ -171,8 +165,10 @@ class CityDataset(torch.utils.data.Dataset):
                     ],
                     "cont_instances": instances["cnt_inst"],
                 },
-                # "objects": ["voxel_id",  "msk"],
-            },
+                # "objects": ["voxel_id",  "mask"],
+            }
+            if instances is not None
+            else None,
             "MaskRaydirs": {
                 "callback": "MaskRaydirs",
                 "parameters": None,
@@ -226,10 +222,10 @@ class GoogleEarthDataset(CityDataset):
                 },
             },
         }
-        self.transform = self._get_data_transform(
+        self.transforms = self._get_data_transform(
             split,
             self._get_transformations(
-                cfg,
+                dt_cfg,
                 bev_crop_size=dt_cfg.VOL_SIZE,
                 img_crop_size=cfg.TRAIN.GANCRAFT.CROP_SIZE
                 if split == "train"
@@ -239,8 +235,33 @@ class GoogleEarthDataset(CityDataset):
         )
 
     def _get_renderings(self, cfg, split):
-        # TODO
-        raise NotImplementedError
+        trajectories = sorted(os.listdir(cfg.FTG_DIR))[:10]
+        files = [
+            {
+                "name": "%s/%02d" % (t, i),
+                "hf": os.path.join(cfg.OSM_DIR, self._get_trajectory_city(t), "hf.png"),
+                "seg": os.path.join(
+                    cfg.OSM_DIR, self._get_trajectory_city(t), "seg.png"
+                ),
+                "footage": os.path.join(
+                    cfg.FTG_DIR, t, "footage", "%s_%02d.jpeg" % (t, i)
+                ),
+                "raycasting": os.path.join(
+                    cfg.FTG_DIR, t, "raycasting", "%s_%02d.pkl" % (t, i)
+                ),
+                "building_stats": os.path.join(cfg.FTG_DIR, t, "%s.pkl" % t),
+            }
+            for t in trajectories
+            for i in range(cfg.N_VIEWS)
+        ]
+        if cfg.PIN_MEMORY:
+            self._pin_memory(cfg, files)
+
+        return files if split == "train" else files[-32:]
+
+    def _get_trajectory_city(self, trajectory):
+        # Trajectory name example: US-SanFrancisco-Chinatown-R624-A354
+        return "-".join(trajectory.split("-")[:2])
 
     def _get_data_transform(self, split, tr):
         return utils.transforms.Compose(
@@ -275,10 +296,10 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
                 },
             },
         }
-        self.transform = self._get_data_transform(
+        self.transforms = self._get_data_transform(
             split,
             self._get_transformations(
-                cfg,
+                dt_cfg,
                 # `instances` is used for the RandomInstances transformation
                 instances={
                     "inst": self.semantic_classes["BLDG_FACADE"]["cond"],
@@ -322,10 +343,10 @@ class CitySampleDataset(CityDataset):
         }
         self.renderings = self._get_renderings(dt_cfg, split)
         self.n_renderings = len(self.renderings)
-        self.transform = self._get_data_transform(
+        self.transforms = self._get_data_transform(
             split,
             self._get_transformations(
-                cfg,
+                dt_cfg,
                 bev_crop_size=dt_cfg.VOL_SIZE,
                 img_crop_size=cfg.TRAIN.GANCRAFT.CROP_SIZE
                 if split == "train"
@@ -392,10 +413,10 @@ class CitySampleBuildingDataset(CitySampleDataset):
                 },
             },
         }
-        self.transform = self._get_data_transform(
+        self.transforms = self._get_data_transform(
             split,
             self._get_transformations(
-                cfg,
+                dt_cfg,
                 # `instances` is used for the RandomInstances transformation
                 instances={
                     "inst": self.semantic_classes["BLDG_FACADE"]["cond"],

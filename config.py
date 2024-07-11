@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-08 19:56:07
+# @Last Modified at: 2024-07-11 19:51:51
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -17,8 +17,24 @@ cfg                                             = __C
 # Dataset Config
 #
 cfg.DATASETS                                     = EasyDict()
+cfg.DATASETS.GOOGLE_EARTH                        = EasyDict()
+cfg.DATASETS.GOOGLE_EARTH.FTG_DIR                = "./data/google-earth"
+cfg.DATASETS.GOOGLE_EARTH.OSM_DIR                = "./data/osm"
+cfg.DATASETS.GOOGLE_EARTH.PIN_MEMORY             = ["hf", "seg", "building_stats"]
+cfg.DATASETS.GOOGLE_EARTH.N_REPEAT               = 1
+cfg.DATASETS.GOOGLE_EARTH.MAX_HEIGHT             = 640
+cfg.DATASETS.GOOGLE_EARTH.N_VIEWS                = 60
+cfg.DATASETS.GOOGLE_EARTH.N_CLASSES              = 7
+cfg.DATASETS.GOOGLE_EARTH.CLASSES                = {"BLDG_FACADE": 2, "BLDG_ROOF": 7}
+cfg.DATASETS.GOOGLE_EARTH.N_MIN_PIXELS           = 64
+cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE               = 1536
+cfg.DATASETS.GOOGLE_EARTH.MIN_INSTANCE           = 10
+cfg.DATASETS.GOOGLE_EARTH.BLDG                   = EasyDict()
+cfg.DATASETS.GOOGLE_EARTH.BLDG.N_CLASSES         = 8
+cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE          = 672
+cfg.DATASETS.GOOGLE_EARTH.BLDG.INS_RANGE         = [10, 65536]
 cfg.DATASETS.CITY_SAMPLE                         = EasyDict()
-cfg.DATASETS.CITY_SAMPLE.DIR                     = "./data"
+cfg.DATASETS.CITY_SAMPLE.DIR                     = "./data/city-sample"
 cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "building_stats"]
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
 cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 384
@@ -64,7 +80,7 @@ cfg.MEMCACHED.CLIENT_CONFIG                      = "/mnt/lustre/share/memcached_
 #
 cfg.WANDB                                        = EasyDict()
 cfg.WANDB.ENABLED                                = False
-cfg.WANDB.PROJECT                                = "City-Gen-HD"
+cfg.WANDB.PROJECT                                = "Moveable-Feast"
 cfg.WANDB.ENTITY                                 = "haozhexie"
 cfg.WANDB.MODE                                   = "online"
 cfg.WANDB.RUN_ID                                 = None
@@ -77,18 +93,18 @@ cfg.NETWORK                                      = EasyDict()
 # GANCraft
 cfg.NETWORK.GANCRAFT                             = EasyDict()
 cfg.NETWORK.GANCRAFT.BUILDING_MODE               = False
-cfg.NETWORK.GANCRAFT.N_CLASSES                   = cfg.DATASETS.CITY_SAMPLE.N_CLASSES
-cfg.NETWORK.GANCRAFT.FACADE_CLS_ID               = cfg.DATASETS.CITY_SAMPLE_BUILDING.FACADE_CLS_ID
-cfg.NETWORK.GANCRAFT.ROOF_CLS_ID                 = cfg.DATASETS.CITY_SAMPLE_BUILDING.ROOF_CLS_ID
+cfg.NETWORK.GANCRAFT.N_CLASSES                   = cfg.DATASETS.GOOGLE_EARTH.N_CLASSES
+cfg.NETWORK.GANCRAFT.FACADE_CLS_ID               = cfg.DATASETS.GOOGLE_EARTH.CLASSES.BLDG_FACADE
+cfg.NETWORK.GANCRAFT.ROOF_CLS_ID                 = cfg.DATASETS.GOOGLE_EARTH.CLASSES.BLDG_ROOF
 cfg.NETWORK.GANCRAFT.STYLE_DIM                   = 256 if cfg.NETWORK.GANCRAFT.BUILDING_MODE else None
 cfg.NETWORK.GANCRAFT.N_SAMPLE_POINTS_PER_RAY     = 24
 cfg.NETWORK.GANCRAFT.DIST_SCALE                  = 0.25
-cfg.NETWORK.GANCRAFT.CENTER_OFFSET               = (cfg.DATASETS.CITY_SAMPLE.VOL_SIZE - cfg.DATASETS.CITY_SAMPLE_BUILDING.VOL_SIZE) / 2
-cfg.NETWORK.GANCRAFT.NORMALIZE_DELIMETER         = ([cfg.DATASETS.CITY_SAMPLE_BUILDING.VOL_SIZE,] * 2 
+cfg.NETWORK.GANCRAFT.CENTER_OFFSET               = (cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE - cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE) / 2
+cfg.NETWORK.GANCRAFT.NORMALIZE_DELIMETER         = ([cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE,] * 2 
                                                     if cfg.NETWORK.GANCRAFT.BUILDING_MODE 
-                                                    else [cfg.DATASETS.CITY_SAMPLE.VOL_SIZE,] * 2) + [cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT]
+                                                    else [cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE,] * 2) + [cfg.DATASETS.GOOGLE_EARTH.MAX_HEIGHT]
 cfg.NETWORK.GANCRAFT.ENCODER                     = "LOCAL" if cfg.NETWORK.GANCRAFT.BUILDING_MODE else "GLOBAL"
-cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM             = 64 if cfg.NETWORK.GANCRAFT.BUILDING_MODE else 32
+cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM             = 64 if cfg.NETWORK.GANCRAFT.BUILDING_MODE else 2
 cfg.NETWORK.GANCRAFT.GLOBAL_ENCODER_N_BLOCKS     = 6
 cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM          = "GROUP_NORM"
 cfg.NETWORK.GANCRAFT.SKY_POS_EMD_LEVEL_RAYDIR    = 5
@@ -98,9 +114,9 @@ cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES     = True
 cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS        = False
 cfg.NETWORK.GANCRAFT.HASH_GRID_N_LEVELS          = 16
 cfg.NETWORK.GANCRAFT.HASH_GRID_LEVEL_DIM         = 8
-cfg.NETWORK.GANCRAFT.HASH_GRID_RESOLUTION        = (cfg.DATASETS.CITY_SAMPLE_BUILDING.VOL_SIZE 
+cfg.NETWORK.GANCRAFT.HASH_GRID_RESOLUTION        = (cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE 
                                                     if cfg.NETWORK.GANCRAFT.BUILDING_MODE 
-                                                    else cfg.DATASETS.CITY_SAMPLE.VOL_SIZE)
+                                                    else cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE)
 cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS          = 10
 cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM              = 256
 cfg.NETWORK.GANCRAFT.SKY_OUT_DIM_COLOR           = 64
@@ -116,7 +132,7 @@ cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE          = 128
 cfg.TRAIN                                        = EasyDict()
 # GANCraft
 cfg.TRAIN.GANCRAFT                               = EasyDict()
-cfg.TRAIN.GANCRAFT.DATASET                       = "CITY_SAMPLE_BUILDING" if cfg.NETWORK.GANCRAFT.BUILDING_MODE else "CITY_SAMPLE"
+cfg.TRAIN.GANCRAFT.DATASET                       = "GOOGLE_EARTH"
 cfg.TRAIN.GANCRAFT.N_EPOCHS                      = 500
 cfg.TRAIN.GANCRAFT.CKPT_SAVE_FREQ                = 25
 cfg.TRAIN.GANCRAFT.BATCH_SIZE                    = 1
@@ -142,7 +158,6 @@ cfg.TRAIN.GANCRAFT.EMA_N_RAMPUP_ITERS            = 10000
 #
 cfg.TEST                                         = EasyDict()
 cfg.TEST.GANCRAFT                                = EasyDict()
-# TODO
-cfg.TEST.GANCRAFT.DATASET                        = "CITY_SAMPLE_BUILDING" if cfg.NETWORK.GANCRAFT.BUILDING_MODE else "CITY_SAMPLE"
+cfg.TEST.GANCRAFT.DATASET                        = "GOOGLE_EARTH"
 cfg.TEST.GANCRAFT.CROP_SIZE                      = (480, 270)
 # fmt: on

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-08 20:46:19
+# @Last Modified at: 2024-07-11 19:34:26
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -67,7 +67,7 @@ class RandomInstances(object):
         self.objects = objects
 
     def __call__(self, data):
-        ins_map = data["voxel_id"] * data["msk"]
+        ins_map = data["voxel_id"] * data["mask"]
         visible_ins = np.unique(np.isin(ins_map, self.instances))
 
         if len(visible_ins) == 0:
@@ -78,7 +78,7 @@ class RandomInstances(object):
             data["inst"].append(data["inst"][0] + ci)
 
         ins_mask = np.isin(data["voxel_id"], data["inst"])
-        data["msk"] &= ins_mask
+        data["mask"] &= ins_mask
         return data
 
 
@@ -131,12 +131,11 @@ class RandomCrop(object):
         # Check the cropped patch contains enough informative pixels for training
         for _ in range(N_MAX_TRY_TIMES):
             offset_x, offset_y = self._get_offsets(iw, ih, width, height, data)
-            mask = self._get_img_patch(data["msk"], offset_x, offset_y)
+            mask = self._get_img_patch(data["mask"], offset_x, offset_y)
 
             n_pixels = np.count_nonzero(mask)
             if n_pixels >= self.n_min_pixels:
-                if self.n_max_points == 0 and self.n_min_points == 0:
-                    break
+                break
 
         return offset_x, offset_y, mask
 
@@ -154,7 +153,7 @@ class RandomCrop(object):
             "h": self.height,
         }
         for k, v in data.items():
-            if k == "msk":
+            if k == "mask":
                 # Prevent duplicated computation
                 data[k] = mask
             if k in self.objects:
@@ -205,7 +204,9 @@ class BevCrop(object):
             cy += data["building_stat"][0]
 
         for k in self.objects:
-            data[k] = self._get_img_patch(data[k], cx, cy, self.width // 2, self.height // 2)
+            data[k] = self._get_img_patch(
+                data[k], cx, cy, self.width // 2, self.height // 2
+            )
 
         return data
 
