@@ -3,7 +3,7 @@
  * @Author: Jiaxiang Tang (@ashawkey)
  * @Date:   2023-04-15 10:43:16
  * @Last Modified by: Haozhe Xie
- * @Last Modified at: 2023-04-29 11:47:54
+ * @Last Modified at: 2024-07-12 15:14:35
  * @Email:  ashawkey1999@gmail.com
  * @Ref: https://github.com/ashawkey/torch-ngp
  */
@@ -527,11 +527,11 @@ void grid_encode_backward_cuda(
   }
 }
 
-void grid_encode_forward(const at::Tensor inputs, const at::Tensor embeddings,
-                         const at::Tensor offsets, at::Tensor outputs,
+void grid_encode_forward(const torch::tensor inputs, const torch::tensor embeddings,
+                         const torch::tensor offsets, torch::tensor outputs,
                          const uint32_t B, const uint32_t D, const uint32_t C,
                          const uint32_t L, const float S, const uint32_t H,
-                         const bool calc_grad_inputs, at::Tensor dy_dx,
+                         const bool calc_grad_inputs, torch::tensor dy_dx,
                          const uint32_t gridtype, const bool align_corners) {
   CHECK_CUDA(inputs);
   CHECK_CUDA(embeddings);
@@ -561,13 +561,13 @@ void grid_encode_forward(const at::Tensor inputs, const at::Tensor embeddings,
       }));
 }
 
-void grid_encode_backward(const at::Tensor grad, const at::Tensor inputs,
-                          const at::Tensor embeddings, const at::Tensor offsets,
-                          at::Tensor grad_embeddings, const uint32_t B,
+void grid_encode_backward(const torch::tensor grad, const torch::tensor inputs,
+                          const torch::tensor embeddings, const torch::tensor offsets,
+                          torch::tensor grad_embeddings, const uint32_t B,
                           const uint32_t D, const uint32_t C, const uint32_t L,
                           const float S, const uint32_t H,
-                          const bool calc_grad_inputs, const at::Tensor dy_dx,
-                          at::Tensor grad_inputs, const uint32_t gridtype,
+                          const bool calc_grad_inputs, const torch::tensor dy_dx,
+                          torch::tensor grad_inputs, const uint32_t gridtype,
                           const bool align_corners) {
   CHECK_CUDA(grad);
   CHECK_CUDA(inputs);
