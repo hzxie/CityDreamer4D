@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 14:32:55
+# @Last Modified at: 2024-07-12 21:14:24
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -20,11 +20,11 @@ from tqdm import tqdm
 def get_dataset(cfg, dataset_name, split):
     if dataset_name == "GOOGLE_EARTH":
         return GoogleEarthDataset(cfg, split)
-    elif dataset_name == "GOOGLE_EARTH_BUILDINGS":
+    elif dataset_name == "GOOGLE_EARTH_BLDG":
         return GoogleEarthBuildingDataset(cfg, split)
     elif dataset_name == "CITY_SAMPLE":
         return CitySampleDataset(cfg, split)
-    elif dataset_name == "CITY_SAMPLE_BUILDING":
+    elif dataset_name == "CITY_SAMPLE_BLDG":
         return CitySampleBuildingDataset(cfg, split)
     else:
         raise Exception("Unknown dataset: %s" % dataset_name)
@@ -87,6 +87,7 @@ class CityDataset(torch.utils.data.Dataset):
         data["hf"] = self._get_height_field(rendering["hf"], self.cfg)
         data["seg"] = self._get_seg_layout(rendering["seg"])
         data["footage"] = self._get_footage_img(rendering["footage"])
+        data["building_stats"] = self._get_building_stats(rendering["building_stats"])
         data = self.transforms(data)
         return data
 
@@ -168,22 +169,25 @@ class CityDataset(torch.utils.data.Dataset):
                 },
                 "objects": ["voxel_id", "depth2", "raydirs", "footage", "mask"],
             },
-            "RandomInstances": {
-                "callback": "RandomInstances",
-                "parameters": {
-                    "instances": [
-                        i
-                        for i in range(
-                            instances["inst"]["range"][0], instances["inst"]["range"][1]
-                        )
-                        if instances["inst"]["cond"](i)
-                    ],
-                    "cont_instances": instances["cnt_inst"],
-                },
-                # "objects": ["voxel_id",  "mask"],
-            }
-            if instances is not None
-            else None,
+            "RandomInstances": (
+                {
+                    "callback": "RandomInstances",
+                    "parameters": {
+                        "instances": [
+                            i
+                            for i in range(
+                                instances["inst"]["range"][0],
+                                instances["inst"]["range"][1],
+                            )
+                            if instances["inst"]["cond"](i)
+                        ],
+                        "cont_instances": instances["cnt_inst"],
+                    },
+                    # "objects": ["voxel_id",  "mask"],
+                }
+                if instances is not None
+                else None
+            ),
             "MaskRaydirs": {
                 "callback": "MaskRaydirs",
                 "parameters": None,
@@ -200,7 +204,7 @@ class CityDataset(torch.utils.data.Dataset):
             "ToOneHot": {
                 "callback": "ToOneHot",
                 "parameters": {
-                    "n_classes": cfg.N_CLASSES,
+                    "n_classes": self.get_n_classes(),
                 },
                 "objects": ["seg"],
             },
@@ -222,9 +226,9 @@ class CityDataset(torch.utils.data.Dataset):
 
 
 class GoogleEarthDataset(CityDataset):
-    def __init__(self, cfg, split):
+    def __init__(self, cfg, split, inst=None):
         dt_cfg = cfg.DATASETS.GOOGLE_EARTH
-        super(GoogleEarthDataset, self).__init__(dt_cfg, split)
+        super(GoogleEarthDataset, self).__init__(dt_cfg, split, inst)
 
         self.renderings = self._get_renderings(dt_cfg, split)
         self.n_renderings = len(self.renderings)
@@ -242,9 +246,11 @@ class GoogleEarthDataset(CityDataset):
             self._get_transformations(
                 dt_cfg,
                 bev_crop_size=dt_cfg.VOL_SIZE,
-                img_crop_size=cfg.TRAIN.GANCRAFT.CROP_SIZE
-                if split == "train"
-                else cfg.TEST.GANCRAFT.CROP_SIZE,
+                img_crop_size=(
+                    cfg.TRAIN.GANCRAFT.CROP_SIZE
+                    if split == "train"
+                    else cfg.TEST.GANCRAFT.CROP_SIZE
+                ),
                 semantic_classes=self.semantic_classes,
             ),
         )
@@ -292,9 +298,9 @@ class GoogleEarthDataset(CityDataset):
 
 class GoogleEarthBuildingDataset(GoogleEarthDataset):
     def __init__(self, cfg, split):
-        dt_cfg = cfg.DATASETS.GOOGLE_EARTH
-        super(GoogleEarthBuildingDataset, self).__init__(dt_cfg, split, inst="BLDG")
+        super(GoogleEarthBuildingDataset, self).__init__(cfg, split, inst="BLDG")
 
+        dt_cfg = cfg.DATASETS.GOOGLE_EARTH
         self.semantic_classes = {
             "BLDG_FACADE": {
                 "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
@@ -322,9 +328,11 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
                     "cnt_inst": [-1],
                 },
                 bev_crop_size=dt_cfg.BLDG.VOL_SIZE,
-                img_crop_size=cfg.TRAIN.GANCRAFT.CROP_SIZE
-                if split == "train"
-                else cfg.TEST.GANCRAFT.CROP_SIZE,
+                img_crop_size=(
+                    cfg.TRAIN.GANCRAFT.CROP_SIZE
+                    if split == "train"
+                    else cfg.TEST.GANCRAFT.CROP_SIZE
+                ),
                 semantic_classes=self.semantic_classes,
             ),
         )
@@ -344,8 +352,8 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
 
 
 class CitySampleDataset(CityDataset):
-    def __init__(self, cfg, split):
-        super(CitySampleDataset, self).__init__(cfg.DATASETS.CITY_SAMPLE, split)
+    def __init__(self, cfg, split, inst=None):
+        super(CitySampleDataset, self).__init__(cfg.DATASETS.CITY_SAMPLE, split, inst)
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
 
         self.semantic_classes = {
@@ -363,9 +371,11 @@ class CitySampleDataset(CityDataset):
             self._get_transformations(
                 dt_cfg,
                 bev_crop_size=dt_cfg.VOL_SIZE,
-                img_crop_size=cfg.TRAIN.GANCRAFT.CROP_SIZE
-                if split == "train"
-                else cfg.TEST.GANCRAFT.CROP_SIZE,
+                img_crop_size=(
+                    cfg.TRAIN.GANCRAFT.CROP_SIZE
+                    if split == "train"
+                    else cfg.TEST.GANCRAFT.CROP_SIZE
+                ),
             ),
         )
 
@@ -409,9 +419,9 @@ class CitySampleDataset(CityDataset):
 
 class CitySampleBuildingDataset(CitySampleDataset):
     def __init__(self, cfg, split):
-        dt_cfg = cfg.DATASETS.CITY_SAMPLE
         super(CitySampleBuildingDataset, self).__init__(cfg, split, inst="BLDG")
 
+        dt_cfg = cfg.DATASETS.CITY_SAMPLE
         self.semantic_classes = {
             "BLDG_FACADE": {
                 "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
@@ -439,9 +449,11 @@ class CitySampleBuildingDataset(CitySampleDataset):
                     "cnt_inst": [1],
                 },
                 bev_crop_size=dt_cfg.BLDG.VOL_SIZE,
-                img_crop_size=cfg.TRAIN.GANCRAFT.CROP_SIZE
-                if split == "train"
-                else cfg.TEST.GANCRAFT.CROP_SIZE,
+                img_crop_size=(
+                    cfg.TRAIN.GANCRAFT.CROP_SIZE
+                    if split == "train"
+                    else cfg.TEST.GANCRAFT.CROP_SIZE
+                ),
             ),
         )
 

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-11 19:34:26
+# @Last Modified at: 2024-07-12 21:10:50
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -18,6 +18,9 @@ class Compose(object):
     def __init__(self, transforms):
         self.transformers = []
         for tr in transforms:
+            if tr is None:
+                continue
+
             transformer = eval(tr["callback"])
             parameters = tr["parameters"] if "parameters" in tr else None
             self.transformers.append(
@@ -67,8 +70,8 @@ class RandomInstances(object):
         self.objects = objects
 
     def __call__(self, data):
-        ins_map = data["voxel_id"] * data["mask"]
-        visible_ins = np.unique(np.isin(ins_map, self.instances))
+        ins_map = data["voxel_id"][..., 0, 0] * data["mask"]
+        visible_ins = np.unique(ins_map[np.isin(ins_map, self.instances)])
 
         if len(visible_ins) == 0:
             return data
@@ -77,7 +80,7 @@ class RandomInstances(object):
         for ci in self.cont_instances:
             data["inst"].append(data["inst"][0] + ci)
 
-        ins_mask = np.isin(data["voxel_id"], data["inst"])
+        ins_mask = np.isin(ins_map, data["inst"])
         data["mask"] &= ins_mask
         return data
 
@@ -97,7 +100,7 @@ class RandomCrop(object):
             offset_x = self._get_offset(image_w, patch_w)
             offset_y = self._get_offset(image_h, patch_h)
         elif self.mode == "instance":
-            x, y = self._get_instance_bbox(data["voxel_id"][..., 0, 0] == data["inst"])
+            x, y = self._get_instance_bbox(np.isin(data["voxel_id"][..., 0, 0], data["inst"]))
             cx, cy = np.random.randint(x[0], x[1]), np.random.randint(y[0], y[1])
             offset_x = min(max(0, cx - patch_w // 2), image_w - patch_w)
             offset_y = min(max(0, cy - patch_h // 2), image_h - patch_h)
@@ -200,8 +203,8 @@ class BevCrop(object):
             # https://github.com/hzxie/city-dreamer/blob/master/utils/datasets.py?ref_type=heads#L489
             dx, dy, w, h = data["building_stats"][inst]
             data["building_stat"] = torch.Tensor([dy, dx, h, w, inst])
-            cx += data["building_stat"][1]
-            cy += data["building_stat"][0]
+            cx = int(cx + data["building_stat"][1])
+            cy = int(cy + data["building_stat"][0])
 
         for k in self.objects:
             data[k] = self._get_img_patch(
@@ -242,7 +245,7 @@ class InstanceToSemantic(object):
         if instance_mode:
             assert type(data["inst"]) == list
             mapper = {}
-            for i in data["inst"].values():
+            for i in data["inst"]:
                 for sc in self.semantic_classes.values():
                     if (
                         i >= sc["cond"]["range"][0]

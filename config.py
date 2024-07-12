@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 14:28:50
+# @Last Modified at: 2024-07-12 20:36:36
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -58,7 +58,8 @@ cfg.DATASETS.CITY_SAMPLE.CAR.INS_RANGE           = [5000, 16384]
 cfg.CONST                                        = EasyDict()
 cfg.CONST.EXP_NAME                               = ""
 cfg.CONST.N_WORKERS                              = 8
-cfg.CONST.NETWORK                                = None
+cfg.CONST.NETWORK                                = "GANCraft"
+cfg.CONST.DATASET                                = "GOOGLE_EARTH_BLDG"
 
 #
 # Directories
@@ -122,7 +123,6 @@ cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE          = 128
 cfg.TRAIN                                        = EasyDict()
 # GANCraft
 cfg.TRAIN.GANCRAFT                               = EasyDict()
-cfg.TRAIN.GANCRAFT.DATASET                       = "GOOGLE_EARTH"
 cfg.TRAIN.GANCRAFT.N_EPOCHS                      = 500
 cfg.TRAIN.GANCRAFT.CKPT_SAVE_FREQ                = 25
 cfg.TRAIN.GANCRAFT.BATCH_SIZE                    = 1
@@ -148,6 +148,5 @@ cfg.TRAIN.GANCRAFT.EMA_N_RAMPUP_ITERS            = 10000
 #
 cfg.TEST                                         = EasyDict()
 cfg.TEST.GANCRAFT                                = EasyDict()
-cfg.TEST.GANCRAFT.DATASET                        = "GOOGLE_EARTH"
 cfg.TEST.GANCRAFT.CROP_SIZE                      = (480, 270)
 # fmt: on

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 15:05:17
+# @Last Modified at: 2024-07-12 20:17:15
 # @Email:  root@haozhexie.com
 
 import copy
@@ -32,9 +32,8 @@ def train(cfg):
     torch.backends.cudnn.benchmark = True
 
     # Set up datasets
-    train_dataset = utils.datasets.get_dataset(cfg, cfg.TRAIN.GANCRAFT.DATASET, "train")
-    val_dataset = utils.datasets.get_dataset(cfg, cfg.TEST.GANCRAFT.DATASET, "val")
-    assert cfg.TRAIN.GANCRAFT.DATASET == cfg.TEST.GANCRAFT.DATASET
+    train_dataset = utils.datasets.get_dataset(cfg, cfg.CONST.DATASET, "train")
+    val_dataset = utils.datasets.get_dataset(cfg, cfg.CONST.DATASET, "val")
 
     # Set up networks
     local_rank = utils.distributed.get_rank()

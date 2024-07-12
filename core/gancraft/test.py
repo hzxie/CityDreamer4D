@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:46:36
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 14:00:43
+# @Last Modified at: 2024-07-12 20:17:23
 # @Email:  root@haozhexie.com
 
 import logging
@@ -40,7 +40,7 @@ def test(cfg, test_data_loader=None, gancraft=None):
 
     if test_data_loader is None:
         test_data_loader = torch.utils.data.DataLoader(
-            dataset=utils.datasets.get_dataset(cfg, cfg.TEST.GANCRAFT.DATASET, "test"),
+            dataset=utils.datasets.get_dataset(cfg, cfg.CONST.DATASET, "test"),
             batch_size=1,
             num_workers=cfg.CONST.N_WORKERS,
             collate_fn=utils.datasets.collate_fn,
@@ -80,10 +80,10 @@ def test(cfg, test_data_loader=None, gancraft=None):
 
             if utils.distributed.is_master():
                 if idx < 3:
-                    key_frames[
-                        "GANCraft/Image/%04d" % idx
-                    ] = utils.helpers.tensor_to_image(
-                        torch.cat([fake_imgs, footage], dim=3), "RGB"
+                    key_frames["GANCraft/Image/%04d" % idx] = (
+                        utils.helpers.tensor_to_image(
+                            torch.cat([fake_imgs, footage], dim=3), "RGB"
+                        )
                     )
 
                 logging.info(
