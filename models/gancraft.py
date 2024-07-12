@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-12 19:53:21
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-01-22 19:51:06
+# @Last Modified at: 2024-07-12 14:26:32
 # @Email:  root@haozhexie.com
 # @Ref: https://github.com/FrozenBurning/SceneDreamer
 
@@ -17,44 +17,43 @@ import extensions.voxlib
 
 
 class GanCraftGenerator(torch.nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, n_classes, delimeter, vol_size, center_offset=0):
         super(GanCraftGenerator, self).__init__()
+        # Configs
         self.cfg = cfg
-        self.render_net = RenderMLP(cfg)
+        self.n_classes = n_classes
+        self.delimeter = delimeter
+        self.center_offset = center_offset
+        # Subnetworks
+        self.render_net = RenderMLP(cfg, n_classes)
         self.denoiser = RenderCNN(cfg)
-        if cfg.NETWORK.GANCRAFT.ENCODER == "GLOBAL":
-            self.encoder = GlobalEncoder(cfg)
-        elif cfg.NETWORK.GANCRAFT.ENCODER == "LOCAL":
-            self.encoder = LocalEncoder(cfg)
+        if cfg.ENCODER == "GLOBAL":
+            self.encoder = GlobalEncoder(cfg, n_classes)
+        elif cfg.ENCODER == "LOCAL":
+            self.encoder = LocalEncoder(cfg, n_classes)
         else:
-            self.encoder = None
+            raise ValueError("Unknown encoder: %s" % cfg.ENCODER)
 
-        if (
-            not cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS
-            and not cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES
-        ):
+        if not cfg.POS_EMD_INCUDE_CORDS and not cfg.POS_EMD_INCUDE_FEATURES:
             raise ValueError(
                 "Either POS_EMD_INCUDE_CORDS or POS_EMD_INCUDE_FEATURES should be True."
             )
 
-        if cfg.NETWORK.GANCRAFT.POS_EMD == "HASH_GRID":
-            grid_encoder_in_dim = 3 if cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS else 0
-            if (
-                cfg.NETWORK.GANCRAFT.ENCODER in ["GLOBAL", "LOCAL"]
-                and cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES
-            ):
-                grid_encoder_in_dim += cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM
+        if cfg.POS_EMD == "HASH_GRID":
+            grid_encoder_in_dim = 3 if cfg.POS_EMD_INCUDE_CORDS else 0
+            if cfg.ENCODER in ["GLOBAL", "LOCAL"] and cfg.POS_EMD_INCUDE_FEATURES:
+                grid_encoder_in_dim += cfg.ENCODER_OUT_DIM
 
             self.pos_encoder = extensions.grid_encoder.GridEncoder(
                 in_channels=grid_encoder_in_dim,
-                n_levels=cfg.NETWORK.GANCRAFT.HASH_GRID_N_LEVELS,
-                lvl_channels=cfg.NETWORK.GANCRAFT.HASH_GRID_LEVEL_DIM,
-                desired_resolution=cfg.NETWORK.GANCRAFT.HASH_GRID_RESOLUTION,
+                desired_resolution=vol_size,
+                n_levels=cfg.HASH_GRID_N_LEVELS,
+                lvl_channels=cfg.HASH_GRID_LEVEL_DIM,
             )
-        elif cfg.NETWORK.GANCRAFT.POS_EMD == "SIN_COS":
+        elif cfg.POS_EMD == "SIN_COS":
             self.pos_encoder = SinCosEncoder(cfg)
 
-        if not self.cfg.NETWORK.GANCRAFT.BUILDING_MODE:
+        if self.cfg.SKY_ENABLED:
             self.sky_net = SkyMLP(cfg)
 
     def forward(
@@ -77,17 +76,17 @@ class GanCraftGenerator(torch.nn.Module):
             intersection.
             raydirs (N x H x W x 1 x 3 tensor): The direction of each ray.
             cam_origin (N x 3 tensor): Camera origins.
-            footprint_bboxes (N x 5 tensor): The dy, dx, h, w, ID of the target building. (Only used in building mode)
+            footprint_bboxes (N x 5 tensor): The dy, dx, h, w, ID of the target instances. (Not used in BG mode)
             z (N x STYLE_DIM tensor): The style vector.
             deterministic (bool): Whether to use equal-distance sampling instead of random stratified sampling.
         Returns:
             fake_images (N x 3 x H x W tensor): fake images
         """
         bs, device = hf_seg.size(0), hf_seg.device
-        if z is None and self.cfg.NETWORK.GANCRAFT.STYLE_DIM is not None:
+        if z is None and self.cfg.STYLE_DIM is not None:
             z = torch.randn(
                 bs,
-                self.cfg.NETWORK.GANCRAFT.STYLE_DIM,
+                self.cfg.STYLE_DIM,
                 dtype=torch.float32,
                 device=device,
             )
@@ -129,7 +128,7 @@ class GanCraftGenerator(torch.nn.Module):
             raydirs (N x H x W x 1 x 3 tensor): The direction of each ray.
             cam_origin (N x 3 tensor): Camera origins.
             z (N x C3 tensor): Intermediate style vectors.
-            footprint_bboxes (N x 4 tensor): The dy, dx, h, w of the target building. (Only used in building mode)
+            footprint_bboxes (N x 5 tensor): The dy, dx, h, w, ID of the target instances. (Not used in BG mode)
             deterministic (bool): Whether to use equal-distance sampling instead of random stratified sampling.
         """
         # Generate sky_mask; PE transform on ray direction.
@@ -141,7 +140,7 @@ class GanCraftGenerator(torch.nn.Module):
 
         with torch.no_grad():
             normalized_cord, new_dists, new_idx = self._get_sampled_coordinates(
-                self.cfg.NETWORK.GANCRAFT.N_SAMPLE_POINTS_PER_RAY,
+                self.cfg.N_SAMPLE_POINTS_PER_RAY,
                 depth2,
                 raydirs,
                 cam_origin,
@@ -151,19 +150,13 @@ class GanCraftGenerator(torch.nn.Module):
             # Generate per-sample segmentation label
             seg_map_bev = torch.gather(voxel_id, -2, new_idx)
             # print(seg_map_bev.size())  # torch.Size([N, H, W, n_samples + 1, 1])
-            # In Building Mode, the one more channel is used for building roofs
-            n_classes = (
-                self.cfg.NETWORK.GANCRAFT.N_CLASSES + 1
-                if self.cfg.NETWORK.GANCRAFT.BUILDING_MODE
-                else self.cfg.NETWORK.GANCRAFT.N_CLASSES
-            )
             seg_map_bev_onehot = torch.zeros(
                 [
                     seg_map_bev.size(0),
                     seg_map_bev.size(1),
                     seg_map_bev.size(2),
                     seg_map_bev.size(3),
-                    n_classes,
+                    self.n_classes,
                 ],
                 dtype=torch.float,
                 device=voxel_id.device,
@@ -177,7 +170,7 @@ class GanCraftGenerator(torch.nn.Module):
 
         # Blending
         weights = self._volum_rendering_relu(
-            net_out_s, new_dists * self.cfg.NETWORK.GANCRAFT.DIST_SCALE, dim=-2
+            net_out_s, new_dists * self.cfg.DIST_SCALE, dim=-2
         )
         # If a ray exclusively hits the sky (no intersection with the voxels), set its weight to zero.
         weights = weights * torch.logical_not(sky_only_mask).float()
@@ -185,9 +178,9 @@ class GanCraftGenerator(torch.nn.Module):
 
         # Sky dome
         sky_weight, rgbs_sky = 0, 0
-        if not self.cfg.NETWORK.GANCRAFT.BUILDING_MODE:
+        if self.cfg.SKY_ENABLED:
             skynet_out_c, sky_avg = self.get_sky(raydirs)
-            if self.cfg.NETWORK.GANCRAFT.SKY_GLOBAL_AVGPOOL:
+            if self.cfg.SKY_GLOBAL_AVGPOOL:
                 sky_avg = self.sky_avg
 
             non_sky_mask = torch.logical_not(sky_mask).float()
@@ -213,9 +206,9 @@ class GanCraftGenerator(torch.nn.Module):
         # print(sky_raydirs_in.size())    # torch.Size([N, H, W, 1, 3])
         sky_raydirs_in = extensions.voxlib.positional_encoding(
             sky_raydirs_in,
-            self.cfg.NETWORK.GANCRAFT.SKY_POS_EMD_LEVEL_RAYDIR,
+            self.cfg.SKY_POS_EMD_LEVEL_RAYDIR,
             -1,
-            self.cfg.NETWORK.GANCRAFT.SKY_POS_EMD_INCLUDE_RAYDIR,
+            self.cfg.SKY_POS_EMD_INCLUDE_RAYDIR,
         )
         # print(sky_raydirs_in.size())  # torch.Size([N, H, W, 1, 33])
         skynet_out_c = self.sky_net(sky_raydirs_in)
@@ -246,29 +239,21 @@ class GanCraftGenerator(torch.nn.Module):
         rand_depth[nan_mask | inf_mask] = 0.0
         world_coord = raydirs * rand_depth + cam_origin[:, None, None, None, :]
         # assert worldcoord2.shape[-1] == 3
-        if self.cfg.NETWORK.GANCRAFT.BUILDING_MODE:
-            assert footprint_bboxes is not None
-            # Make the building object-centric
+        # Make the instance object-centric
+        if footprint_bboxes is not None:
             footprint_bboxes = footprint_bboxes[:, None, None, None, :].repeat(
                 1, world_coord.size(1), world_coord.size(2), world_coord.size(3), 1
             )
-            world_coord[..., 0] -= (
-                footprint_bboxes[..., 0] + self.cfg.NETWORK.GANCRAFT.CENTER_OFFSET
-            )
-            world_coord[..., 1] -= (
-                footprint_bboxes[..., 1] + self.cfg.NETWORK.GANCRAFT.CENTER_OFFSET
-            )
-            # TODO: Fix non-building rays
+            world_coord[..., 0] -= footprint_bboxes[..., 0] + self.center_offset
+            world_coord[..., 1] -= footprint_bboxes[..., 1] + self.center_offset
             zero_rd_mask = raydirs.repeat(1, 1, 1, n_samples, 1)
             world_coord[zero_rd_mask == 0] = 0
 
-        normalized_cord = self._get_normalized_coordinates(world_coord)
+        normalized_cord = self._get_normalized_coordinates(world_coord, self.delimeter)
         return normalized_cord, new_dists, new_idx
 
-    def _get_normalized_coordinates(self, world_coord):
-        delimeter = torch.tensor(
-            self.cfg.NETWORK.GANCRAFT.NORMALIZE_DELIMETER, device=world_coord.device
-        )
+    def _get_normalized_coordinates(self, world_coord, delimeter):
+        delimeter = torch.tensor(delimeter, device=world_coord.device)
         normalized_cord = world_coord / delimeter * 2 - 1
         # TODO: Temporary fix
         normalized_cord[normalized_cord > 1] = 1
@@ -359,7 +344,6 @@ class GanCraftGenerator(torch.nn.Module):
         midpoints = (rand_samples[..., 1:, :] + rand_samples[..., :-1, :]) / 2
         # print(midpoints.size())  # torch.Size([N, H, W, n_samples, 1])
         new_dists = rand_samples[..., 1:, :] - rand_samples[..., :-1, :]
-
         # Scatter the random samples back
         # print(midpoints.unsqueeze(-3).size())   # torch.Size([N, H, W, 1, n_samples, 1])
         # print(accu_depth.unsqueeze(-2).size())  # torch.Size([N, H, W, M, 1, 1])
@@ -418,7 +402,7 @@ class GanCraftGenerator(torch.nn.Module):
             0,
             device=normalized_cord.device,
         )
-        if self.cfg.NETWORK.GANCRAFT.ENCODER == "GLOBAL":
+        if self.cfg.ENCODER == "GLOBAL":
             # print(features.size())  # torch.Size([N, ENCODER_OUT_DIM])
             feature_in = features[:, None, None, None, :].repeat(
                 1,
@@ -427,7 +411,7 @@ class GanCraftGenerator(torch.nn.Module):
                 normalized_cord.size(3),
                 1,
             )
-        elif self.cfg.NETWORK.GANCRAFT.ENCODER == "LOCAL":
+        elif self.cfg.ENCODER == "LOCAL":
             # print(features.size())    # torch.Size([N, ENCODER_OUT_DIM - 1, H, W])
             # print(world_coord.size()) # torch.Size([N, H, W, L, 3])
             # NOTE: grid specifies the sampling pixel locations normalized by the input spatial
@@ -453,30 +437,24 @@ class GanCraftGenerator(torch.nn.Module):
             feature_in = torch.cat([feature_in, normalized_cord[..., [2]]], dim=-1)
             # print(feature_in.size())  # torch.Size([N, H, W, L, ENCODER_OUT_DIM])
 
-        if self.cfg.NETWORK.GANCRAFT.POS_EMD in ["HASH_GRID", "SIN_COS"]:
-            if (
-                self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS
-                and self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES
-            ):
+        if self.cfg.POS_EMD in ["HASH_GRID", "SIN_COS"]:
+            if self.cfg.POS_EMD_INCUDE_CORDS and self.cfg.POS_EMD_INCUDE_FEATURES:
                 feature_in = self.pos_encoder(
                     torch.cat([normalized_cord, feature_in], dim=-1)
                 )
-            elif self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS:
+            elif self.cfg.POS_EMD_INCUDE_CORDS:
                 feature_in = torch.cat(
                     [self.pos_encoder(normalized_cord), feature_in], dim=-1
                 )
-            elif self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES:
+            elif self.cfg.POS_EMD_INCUDE_FEATURES:
                 # Ignore normalized_cord here to make it decoupled with coordinates
                 feature_in = torch.cat([self.pos_encoder(feature_in)], dim=-1)
         else:
-            if (
-                self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS
-                and self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES
-            ):
+            if self.cfg.POS_EMD_INCUDE_CORDS and self.cfg.POS_EMD_INCUDE_FEATURES:
                 feature_in = torch.cat([normalized_cord, feature_in], dim=-1)
-            elif self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS:
+            elif self.cfg.POS_EMD_INCUDE_CORDS:
                 feature_in = normalized_cord
-            elif self.cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES:
+            elif self.cfg.POS_EMD_INCUDE_FEATURES:
                 feature_in = feature_in
 
         net_out_s, net_out_c = self.render_net(feature_in, z, seg_map_bev_onehot)
@@ -501,9 +479,8 @@ class GanCraftGenerator(torch.nn.Module):
 
 
 class GlobalEncoder(torch.nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, n_classes):
         super(GlobalEncoder, self).__init__()
-        n_classes = cfg.NETWORK.GANCRAFT.N_CLASSES
         self.hf_conv = torch.nn.Conv2d(1, 8, kernel_size=3, stride=2, padding=1)
         self.seg_conv = torch.nn.Conv2d(
             n_classes,
@@ -514,7 +491,7 @@ class GlobalEncoder(torch.nn.Module):
         )
         conv_blocks = []
         cur_hidden_channels = 16
-        for _ in range(1, cfg.NETWORK.GANCRAFT.GLOBAL_ENCODER_N_BLOCKS):
+        for _ in range(1, cfg.GLOBAL_ENCODER_N_BLOCKS):
             conv_blocks.append(
                 SRTConvBlock(in_channels=cur_hidden_channels, out_channels=None)
             )
@@ -522,7 +499,7 @@ class GlobalEncoder(torch.nn.Module):
 
         self.conv_blocks = torch.nn.Sequential(*conv_blocks)
         self.fc1 = torch.nn.Linear(cur_hidden_channels, 16)
-        self.fc2 = torch.nn.Linear(16, cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM)
+        self.fc2 = torch.nn.Linear(16, cfg.ENCODER_OUT_DIM)
         self.act = torch.nn.LeakyReLU(0.2)
 
     def forward(self, hf_seg):
@@ -540,33 +517,28 @@ class GlobalEncoder(torch.nn.Module):
 
 
 class LocalEncoder(torch.nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, n_classes):
         super(LocalEncoder, self).__init__()
-        n_classes = cfg.NETWORK.GANCRAFT.N_CLASSES
         self.hf_conv = torch.nn.Conv2d(1, 32, kernel_size=7, stride=2, padding=3)
         self.seg_conv = torch.nn.Conv2d(
             n_classes, 32, kernel_size=7, stride=2, padding=3
         )
-        if cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM == "BATCH_NORM":
+        if cfg.LOCAL_ENCODER_NORM == "BATCH_NORM":
             self.bn1 = torch.nn.BatchNorm2d(64)
-        elif cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM == "GROUP_NORM":
+        elif cfg.LOCAL_ENCODER_NORM == "GROUP_NORM":
             self.bn1 = torch.nn.GroupNorm(32, 64)
         else:
-            raise ValueError(
-                "Unknown normalization: %s" % cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM
-            )
-        self.conv2 = ResConvBlock(64, 128, cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM)
-        self.conv3 = ResConvBlock(128, 256, cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM)
-        self.conv4 = ResConvBlock(256, 512, cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM)
+            raise ValueError("Unknown normalization: %s" % cfg.LOCAL_ENCODER_NORM)
+        self.conv2 = ResConvBlock(64, 128, cfg.LOCAL_ENCODER_NORM)
+        self.conv3 = ResConvBlock(128, 256, cfg.LOCAL_ENCODER_NORM)
+        self.conv4 = ResConvBlock(256, 512, cfg.LOCAL_ENCODER_NORM)
         self.dconv5 = torch.nn.ConvTranspose2d(
             512, 128, kernel_size=4, stride=2, padding=1
         )
         self.dconv6 = torch.nn.ConvTranspose2d(
             128, 32, kernel_size=4, stride=2, padding=1
         )
-        self.dconv7 = torch.nn.Conv2d(
-            32, cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM - 1, kernel_size=1
-        )
+        self.dconv7 = torch.nn.Conv2d(32, cfg.ENCODER_OUT_DIM - 1, kernel_size=1)
 
     def forward(self, hf_seg):
         hf = self.hf_conv(hf_seg[:, [0]])
@@ -593,8 +565,8 @@ class SinCosEncoder(torch.nn.Module):
         super(SinCosEncoder, self).__init__()
         self.freq_bands = 2.0 ** torch.linspace(
             0,
-            cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS - 1,
-            steps=cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS,
+            cfg.SIN_COS_FREQ_BENDS - 1,
+            steps=cfg.SIN_COS_FREQ_BENDS,
         )
 
     def forward(self, features):
@@ -610,152 +582,136 @@ class SinCosEncoder(torch.nn.Module):
 class RenderMLP(torch.nn.Module):
     r"""MLP with affine modulation."""
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, n_classes):
         super(RenderMLP, self).__init__()
         in_dim = 0
-        f_dim = (
-            cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM
-            if cfg.NETWORK.GANCRAFT.ENCODER in ["GLOBAL", "LOCAL"]
-            else 0
-        )
-        if cfg.NETWORK.GANCRAFT.POS_EMD == "HASH_GRID":
-            in_dim = (
-                cfg.NETWORK.GANCRAFT.HASH_GRID_N_LEVELS
-                * cfg.NETWORK.GANCRAFT.HASH_GRID_LEVEL_DIM
-            )
+        f_dim = cfg.ENCODER_OUT_DIM if cfg.ENCODER in ["GLOBAL", "LOCAL"] else 0
+        if cfg.POS_EMD == "HASH_GRID":
+            in_dim = cfg.HASH_GRID_N_LEVELS * cfg.HASH_GRID_LEVEL_DIM
             in_dim += (
                 f_dim
-                if cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS
-                and not cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES
+                if cfg.POS_EMD_INCUDE_CORDS and not cfg.POS_EMD_INCUDE_FEATURES
                 else 0
             )
-        elif cfg.NETWORK.GANCRAFT.POS_EMD == "SIN_COS":
-            if (
-                cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS
-                and cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES
-            ):
-                in_dim = (3 + f_dim) * cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS * 2
-            elif cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS:
-                in_dim = 3 * cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS * 2 + f_dim
-            elif cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES:
-                in_dim = f_dim * cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS * 2
+        elif cfg.POS_EMD == "SIN_COS":
+            if cfg.POS_EMD_INCUDE_CORDS and cfg.POS_EMD_INCUDE_FEATURES:
+                in_dim = (3 + f_dim) * cfg.SIN_COS_FREQ_BENDS * 2
+            elif cfg.POS_EMD_INCUDE_CORDS:
+                in_dim = 3 * cfg.SIN_COS_FREQ_BENDS * 2 + f_dim
+            elif cfg.POS_EMD_INCUDE_FEATURES:
+                in_dim = f_dim * cfg.SIN_COS_FREQ_BENDS * 2
         else:
-            if (
-                cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS
-                and cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES
-            ):
+            if cfg.POS_EMD_INCUDE_CORDS and cfg.POS_EMD_INCUDE_FEATURES:
                 in_dim = 3 + f_dim
-            elif cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS:
+            elif cfg.POS_EMD_INCUDE_CORDS:
                 in_dim = 3
-            elif cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES:
+            elif cfg.POS_EMD_INCUDE_FEATURES:
                 in_dim = f_dim
 
         self.fc_m_a = torch.nn.Linear(
-            cfg.NETWORK.GANCRAFT.N_CLASSES + 1
-            if cfg.NETWORK.GANCRAFT.BUILDING_MODE
-            else cfg.NETWORK.GANCRAFT.N_CLASSES,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            n_classes,
+            cfg.RENDER_HIDDEN_DIM,
             bias=False,
         )
         self.fc_1 = torch.nn.Linear(
             in_dim,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
         )
         self.fc_2 = (
             ModLinear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.STYLE_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.STYLE_DIM,
                 bias=False,
                 mod_bias=True,
                 output_mode=True,
             )
-            if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None
+            if cfg.STYLE_DIM is not None
             else torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
             )
         )
         self.fc_3 = (
             ModLinear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.STYLE_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.STYLE_DIM,
                 bias=False,
                 mod_bias=True,
                 output_mode=True,
             )
-            if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None
+            if cfg.STYLE_DIM is not None
             else torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
             )
         )
         self.fc_4 = (
             ModLinear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.STYLE_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.STYLE_DIM,
                 bias=False,
                 mod_bias=True,
                 output_mode=True,
             )
-            if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None
+            if cfg.STYLE_DIM is not None
             else torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
             )
         )
         self.fc_sigma = (
             torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_OUT_DIM_SIGMA,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_OUT_DIM_SIGMA,
             )
-            if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None
+            if cfg.STYLE_DIM is not None
             else torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_OUT_DIM_SIGMA,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_OUT_DIM_SIGMA,
             )
         )
         self.fc_5 = (
             ModLinear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.STYLE_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.STYLE_DIM,
                 bias=False,
                 mod_bias=True,
                 output_mode=True,
             )
-            if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None
+            if cfg.STYLE_DIM is not None
             else torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
             )
         )
         self.fc_6 = (
             ModLinear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.STYLE_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.STYLE_DIM,
                 bias=False,
                 mod_bias=True,
                 output_mode=True,
             )
-            if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None
+            if cfg.STYLE_DIM is not None
             else torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_HIDDEN_DIM,
             )
         )
         self.fc_out_c = (
             torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_OUT_DIM_COLOR,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_OUT_DIM_COLOR,
             )
-            if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None
+            if cfg.STYLE_DIM is not None
             else torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-                cfg.NETWORK.GANCRAFT.RENDER_OUT_DIM_COLOR,
+                cfg.RENDER_HIDDEN_DIM,
+                cfg.RENDER_OUT_DIM_COLOR,
             )
         )
         self.act = torch.nn.LeakyReLU(negative_slope=0.2)
@@ -765,7 +721,7 @@ class RenderMLP(torch.nn.Module):
 
         Args:
             x (N x H x W x M x in_channels tensor): Projected features.
-            z (N x cfg.NETWORK.GANCRAFT.STYLE_DIM tensor): Style codes.
+            z (N x cfg.STYLE_DIM tensor): Style codes.
             m (N x H x W x M x mask_channels tensor): One-hot segmentation maps.
         """
         # b, h, w, n, _ = x.size()
@@ -792,26 +748,16 @@ class SkyMLP(torch.nn.Module):
 
     def __init__(self, cfg):
         super(SkyMLP, self).__init__()
-        in_dim = 3 * (cfg.NETWORK.GANCRAFT.SKY_POS_EMD_LEVEL_RAYDIR * 2)
-        if cfg.NETWORK.GANCRAFT.SKY_POS_EMD_INCLUDE_RAYDIR:
+        in_dim = 3 * (cfg.SKY_POS_EMD_LEVEL_RAYDIR * 2)
+        if cfg.SKY_POS_EMD_INCLUDE_RAYDIR:
             in_dim += 3
 
-        self.fc1 = torch.nn.Linear(in_dim, cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM)
-        self.fc2 = torch.nn.Linear(
-            cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM, cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM
-        )
-        self.fc3 = torch.nn.Linear(
-            cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM, cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM
-        )
-        self.fc4 = torch.nn.Linear(
-            cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM, cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM
-        )
-        self.fc5 = torch.nn.Linear(
-            cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM, cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM
-        )
-        self.fc_out_c = torch.nn.Linear(
-            cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM, cfg.NETWORK.GANCRAFT.SKY_OUT_DIM_COLOR
-        )
+        self.fc1 = torch.nn.Linear(in_dim, cfg.SKY_HIDDEN_DIM)
+        self.fc2 = torch.nn.Linear(cfg.SKY_HIDDEN_DIM, cfg.SKY_HIDDEN_DIM)
+        self.fc3 = torch.nn.Linear(cfg.SKY_HIDDEN_DIM, cfg.SKY_HIDDEN_DIM)
+        self.fc4 = torch.nn.Linear(cfg.SKY_HIDDEN_DIM, cfg.SKY_HIDDEN_DIM)
+        self.fc5 = torch.nn.Linear(cfg.SKY_HIDDEN_DIM, cfg.SKY_HIDDEN_DIM)
+        self.fc_out_c = torch.nn.Linear(cfg.SKY_HIDDEN_DIM, cfg.SKY_OUT_DIM_COLOR)
         self.act = torch.nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
     def forward(self, x):
@@ -834,65 +780,63 @@ class RenderCNN(torch.nn.Module):
 
     def __init__(self, cfg):
         super(RenderCNN, self).__init__()
-        if cfg.NETWORK.GANCRAFT.STYLE_DIM is not None:
+        if cfg.STYLE_DIM is not None:
             self.fc_z_cond = torch.nn.Linear(
-                cfg.NETWORK.GANCRAFT.STYLE_DIM,
-                2 * 2 * cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+                cfg.STYLE_DIM,
+                2 * 2 * cfg.RENDER_HIDDEN_DIM,
             )
         self.conv1 = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_OUT_DIM_COLOR,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_OUT_DIM_COLOR,
+            cfg.RENDER_HIDDEN_DIM,
             1,
             stride=1,
             padding=0,
         )
         self.conv2a = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
             3,
             stride=1,
             padding=1,
         )
         self.conv2b = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
             3,
             stride=1,
             padding=1,
             bias=False,
         )
         self.conv3a = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
             3,
             stride=1,
             padding=1,
         )
         self.conv3b = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
             3,
             stride=1,
             padding=1,
             bias=False,
         )
         self.conv4a = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
             1,
             stride=1,
             padding=0,
         )
         self.conv4b = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
+            cfg.RENDER_HIDDEN_DIM,
             1,
             stride=1,
             padding=0,
         )
-        self.conv4 = torch.nn.Conv2d(
-            cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM, 3, 1, stride=1, padding=0
-        )
+        self.conv4 = torch.nn.Conv2d(cfg.RENDER_HIDDEN_DIM, 3, 1, stride=1, padding=0)
         self.act = torch.nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
     def modulate(self, x, w, b):
@@ -1145,7 +1089,7 @@ class ModLinear(torch.nn.Module):
 
 
 class GanCraftDiscriminator(torch.nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, n_classes):
         super(GanCraftDiscriminator, self).__init__()
         # bottom-up pathway
         # down_conv2d_block = Conv2dBlock, stride=2, kernel=3, padding=1, weight_norm=spectral
@@ -1154,7 +1098,7 @@ class GanCraftDiscriminator(torch.nn.Module):
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
                     3,  # RGB
-                    cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    cfg.DIS_N_CHANNEL_BASE,
                     stride=2,
                     kernel_size=3,
                     padding=1,
@@ -1167,8 +1111,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.enc2 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    1 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    2 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    1 * cfg.DIS_N_CHANNEL_BASE,
+                    2 * cfg.DIS_N_CHANNEL_BASE,
                     stride=2,
                     kernel_size=3,
                     padding=1,
@@ -1181,8 +1125,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.enc3 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    2 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    2 * cfg.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
                     stride=2,
                     kernel_size=3,
                     padding=1,
@@ -1195,8 +1139,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.enc4 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    8 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
+                    8 * cfg.DIS_N_CHANNEL_BASE,
                     stride=2,
                     kernel_size=3,
                     padding=1,
@@ -1209,8 +1153,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.enc5 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    8 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    8 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    8 * cfg.DIS_N_CHANNEL_BASE,
+                    8 * cfg.DIS_N_CHANNEL_BASE,
                     stride=2,
                     kernel_size=3,
                     padding=1,
@@ -1225,8 +1169,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.lat2 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    2 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    2 * cfg.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
                     stride=1,
                     kernel_size=1,
                     bias=True,
@@ -1238,8 +1182,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.lat3 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
                     stride=1,
                     kernel_size=1,
                     bias=True,
@@ -1251,8 +1195,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.lat4 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    8 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    8 * cfg.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
                     stride=1,
                     kernel_size=1,
                     bias=True,
@@ -1264,8 +1208,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.lat5 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    8 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    8 * cfg.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
                     stride=1,
                     kernel_size=1,
                     bias=True,
@@ -1283,8 +1227,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         self.final2 = torch.nn.Sequential(
             torch.nn.utils.spectral_norm(
                 torch.nn.Conv2d(
-                    4 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                    2 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
+                    4 * cfg.DIS_N_CHANNEL_BASE,
+                    2 * cfg.DIS_N_CHANNEL_BASE,
                     stride=1,
                     kernel_size=3,
                     padding=1,
@@ -1296,8 +1240,8 @@ class GanCraftDiscriminator(torch.nn.Module):
         # self.output = Conv2dBlock(num_filters * 2, num_labels + 1, kernel_size=1)
         self.output = torch.nn.Sequential(
             torch.nn.Conv2d(
-                2 * cfg.NETWORK.GANCRAFT.DIS_N_CHANNEL_BASE,
-                cfg.NETWORK.GANCRAFT.N_CLASSES + 1,
+                2 * cfg.DIS_N_CHANNEL_BASE,
+                n_classes + 1,
                 stride=1,
                 kernel_size=1,
                 bias=True,

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:46:36
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-01-09 18:19:50
+# @Last Modified at: 2024-07-12 14:00:43
 # @Email:  root@haozhexie.com
 
 import logging
@@ -20,7 +20,13 @@ import utils.helpers
 def test(cfg, test_data_loader=None, gancraft=None):
     torch.backends.cudnn.benchmark = True
     if gancraft is None:
-        gancraft = models.gancraft.GanCraftGenerator(cfg)
+        gancraft = models.gancraft.GanCraftGenerator(
+            cfg.NETWORK.GANCRAFT,
+            n_classes=test_data_loader.dataset.get_n_classes(),
+            delimeter=test_data_loader.dataset.get_delimeter(),
+            vol_size=test_data_loader.dataset.get_vol_size(),
+            center_offset=test_data_loader.dataset.get_center_offset(),
+        )
         if torch.cuda.is_available():
             gancraft = torch.nn.DataParallel(gancraft).cuda()
             gancraft.device = gancraft.output_device
@@ -74,27 +80,12 @@ def test(cfg, test_data_loader=None, gancraft=None):
 
             if utils.distributed.is_master():
                 if idx < 3:
-                    if cfg.NETWORK.GANCRAFT.BUILDING_MODE:
-                        masks = torch.zeros_like(data["mask"], device=gancraft.device)
-                        masks[
-                            torch.isin(
-                                voxel_id[:, None, ..., 0, 0],
-                                torch.tensor(
-                                    [
-                                        cfg.DATASETS.CITY_SAMPLE_BUILDING.FACADE_CLS_ID,
-                                        cfg.DATASETS.CITY_SAMPLE_BUILDING.ROOF_CLS_ID,
-                                    ],
-                                    device=gancraft.device,
-                                ),
-                            )
-                        ] = 1
-                        footage = footage * masks
-
                     key_frames[
                         "GANCraft/Image/%04d" % idx
                     ] = utils.helpers.tensor_to_image(
                         torch.cat([fake_imgs, footage], dim=3), "RGB"
                     )
+
                 logging.info(
                     "Test[%d/%d] Losses = %s"
                     % (idx + 1, n_samples, ["%.4f" % l for l in test_losses.val()])

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-11 19:51:51
+# @Last Modified at: 2024-07-12 14:28:50
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -27,8 +27,8 @@ cfg.DATASETS.GOOGLE_EARTH.N_VIEWS                = 60
 cfg.DATASETS.GOOGLE_EARTH.N_CLASSES              = 7
 cfg.DATASETS.GOOGLE_EARTH.CLASSES                = {"BLDG_FACADE": 2, "BLDG_ROOF": 7}
 cfg.DATASETS.GOOGLE_EARTH.N_MIN_PIXELS           = 64
-cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE               = 1536
 cfg.DATASETS.GOOGLE_EARTH.MIN_INSTANCE           = 10
+cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE               = 1536
 cfg.DATASETS.GOOGLE_EARTH.BLDG                   = EasyDict()
 cfg.DATASETS.GOOGLE_EARTH.BLDG.N_CLASSES         = 8
 cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE          = 672
@@ -43,9 +43,9 @@ cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
 cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"CAR": 3, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
 cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
-cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 1536
 cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
 cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]
+cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 1536
 cfg.DATASETS.CITY_SAMPLE.BLDG                    = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.BLDG.VOL_SIZE           = 672
 cfg.DATASETS.CITY_SAMPLE.BLDG.INS_RANGE          = [100, 5000]
@@ -92,32 +92,22 @@ cfg.WANDB.SYNC_TENSORBOARD                       = False
 cfg.NETWORK                                      = EasyDict()
 # GANCraft
 cfg.NETWORK.GANCRAFT                             = EasyDict()
-cfg.NETWORK.GANCRAFT.BUILDING_MODE               = False
-cfg.NETWORK.GANCRAFT.N_CLASSES                   = cfg.DATASETS.GOOGLE_EARTH.N_CLASSES
-cfg.NETWORK.GANCRAFT.FACADE_CLS_ID               = cfg.DATASETS.GOOGLE_EARTH.CLASSES.BLDG_FACADE
-cfg.NETWORK.GANCRAFT.ROOF_CLS_ID                 = cfg.DATASETS.GOOGLE_EARTH.CLASSES.BLDG_ROOF
-cfg.NETWORK.GANCRAFT.STYLE_DIM                   = 256 if cfg.NETWORK.GANCRAFT.BUILDING_MODE else None
+cfg.NETWORK.GANCRAFT.STYLE_DIM                   = None         # Options: None, <Any Positive Integers>
 cfg.NETWORK.GANCRAFT.N_SAMPLE_POINTS_PER_RAY     = 24
 cfg.NETWORK.GANCRAFT.DIST_SCALE                  = 0.25
-cfg.NETWORK.GANCRAFT.CENTER_OFFSET               = (cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE - cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE) / 2
-cfg.NETWORK.GANCRAFT.NORMALIZE_DELIMETER         = ([cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE,] * 2 
-                                                    if cfg.NETWORK.GANCRAFT.BUILDING_MODE 
-                                                    else [cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE,] * 2) + [cfg.DATASETS.GOOGLE_EARTH.MAX_HEIGHT]
-cfg.NETWORK.GANCRAFT.ENCODER                     = "LOCAL" if cfg.NETWORK.GANCRAFT.BUILDING_MODE else "GLOBAL"
-cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM             = 64 if cfg.NETWORK.GANCRAFT.BUILDING_MODE else 2
+cfg.NETWORK.GANCRAFT.ENCODER                     = "GLOBAL"     # Options: "GLOBAL", "LOCAL"
+cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM             = 2
 cfg.NETWORK.GANCRAFT.GLOBAL_ENCODER_N_BLOCKS     = 6
-cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM          = "GROUP_NORM"
+cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM          = "GROUP_NORM" # Options: "GROUP_NORM", "BATCH_NORM"
 cfg.NETWORK.GANCRAFT.SKY_POS_EMD_LEVEL_RAYDIR    = 5
 cfg.NETWORK.GANCRAFT.SKY_POS_EMD_INCLUDE_RAYDIR  = True
-cfg.NETWORK.GANCRAFT.POS_EMD                     = "SIN_COS" if cfg.NETWORK.GANCRAFT.BUILDING_MODE else "HASH_GRID"
+cfg.NETWORK.GANCRAFT.POS_EMD                     = "HASH_GRID"  # Options: "HASH_GRID", "SIN_COS"
 cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES     = True
 cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS        = False
 cfg.NETWORK.GANCRAFT.HASH_GRID_N_LEVELS          = 16
 cfg.NETWORK.GANCRAFT.HASH_GRID_LEVEL_DIM         = 8
-cfg.NETWORK.GANCRAFT.HASH_GRID_RESOLUTION        = (cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE 
-                                                    if cfg.NETWORK.GANCRAFT.BUILDING_MODE 
-                                                    else cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE)
 cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS          = 10
+cfg.NETWORK.GANCRAFT.SKY_ENABLED                 = False
 cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM              = 256
 cfg.NETWORK.GANCRAFT.SKY_OUT_DIM_COLOR           = 64
 cfg.NETWORK.GANCRAFT.SKY_GLOBAL_AVGPOOL          = False

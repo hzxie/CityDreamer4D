@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-11 19:34:03
+# @Last Modified at: 2024-07-12 14:32:55
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -48,15 +48,30 @@ def collate_fn(batch):
 
 
 class CityDataset(torch.utils.data.Dataset):
-    def __init__(self, cfg, split):
+    def __init__(self, cfg, split, inst=None):
         super(CityDataset, self).__init__()
         self.cfg = cfg
         self.split = split
+        self.inst = inst
         self.fields = ["hf", "seg", "footage", "raycasting"]
         self.memcached = {}
         self.renderings = []
         self.n_renderings = 0
         self.transforms = None
+
+    def get_n_classes(self):
+        return self.cfg.N_CLASSES + 1 if self.inst == "BLDG" else self.cfg.N_CLASSES
+
+    def get_delimeter(self):
+        vol_size = self.get_vol_size()
+        return [vol_size, vol_size, self.cfg.MAX_HEIGHT]
+
+    def get_vol_size(self):
+        cfg = self.cfg if self.inst is None else self.cfg[self.inst]
+        return cfg.VOL_SIZE
+
+    def get_center_offset(self):
+        return (self.cfg.VOL_SIZE - self.get_vol_size()) / 2
 
     def __len__(self):
         return (
@@ -235,7 +250,7 @@ class GoogleEarthDataset(CityDataset):
         )
 
     def _get_renderings(self, cfg, split):
-        trajectories = sorted(os.listdir(cfg.FTG_DIR))[:10]
+        trajectories = sorted(os.listdir(cfg.FTG_DIR))
         files = [
             {
                 "name": "%s/%02d" % (t, i),
@@ -278,7 +293,7 @@ class GoogleEarthDataset(CityDataset):
 class GoogleEarthBuildingDataset(GoogleEarthDataset):
     def __init__(self, cfg, split):
         dt_cfg = cfg.DATASETS.GOOGLE_EARTH
-        super(GoogleEarthBuildingDataset, self).__init__(dt_cfg, split)
+        super(GoogleEarthBuildingDataset, self).__init__(dt_cfg, split, inst="BLDG")
 
         self.semantic_classes = {
             "BLDG_FACADE": {
@@ -395,7 +410,7 @@ class CitySampleDataset(CityDataset):
 class CitySampleBuildingDataset(CitySampleDataset):
     def __init__(self, cfg, split):
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
-        super(CitySampleBuildingDataset, self).__init__(cfg, split)
+        super(CitySampleBuildingDataset, self).__init__(cfg, split, inst="BLDG")
 
         self.semantic_classes = {
             "BLDG_FACADE": {

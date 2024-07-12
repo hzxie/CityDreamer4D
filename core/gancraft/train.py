@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-01-09 18:23:09
+# @Last Modified at: 2024-07-12 15:05:17
 # @Email:  root@haozhexie.com
 
 import copy
@@ -30,10 +30,25 @@ from time import time
 
 def train(cfg):
     torch.backends.cudnn.benchmark = True
+
+    # Set up datasets
+    train_dataset = utils.datasets.get_dataset(cfg, cfg.TRAIN.GANCRAFT.DATASET, "train")
+    val_dataset = utils.datasets.get_dataset(cfg, cfg.TEST.GANCRAFT.DATASET, "val")
+    assert cfg.TRAIN.GANCRAFT.DATASET == cfg.TEST.GANCRAFT.DATASET
+
     # Set up networks
     local_rank = utils.distributed.get_rank()
-    gancraft_g = models.gancraft.GanCraftGenerator(cfg)
-    gancraft_d = models.gancraft.GanCraftDiscriminator(cfg)
+    gancraft_g = models.gancraft.GanCraftGenerator(
+        cfg.NETWORK.GANCRAFT,
+        n_classes=train_dataset.get_n_classes(),
+        delimeter=train_dataset.get_delimeter(),
+        vol_size=train_dataset.get_vol_size(),
+        center_offset=train_dataset.get_center_offset(),
+    )
+    gancraft_d = models.gancraft.GanCraftDiscriminator(
+        cfg.NETWORK.GANCRAFT,
+        n_classes=train_dataset.get_n_classes(),
+    )
     if torch.cuda.is_available():
         logging.info("Start running the DDP on rank %d." % local_rank)
         gancraft_g = torch.nn.parallel.DistributedDataParallel(
@@ -50,9 +65,7 @@ def train(cfg):
         gancraft_g.device = torch.device("cpu")
         gancraft_d.device = torch.device("cpu")
 
-    # Set up data loader
-    train_dataset = utils.datasets.get_dataset(cfg, cfg.TRAIN.GANCRAFT.DATASET, "train")
-    val_dataset = utils.datasets.get_dataset(cfg, cfg.TRAIN.GANCRAFT.DATASET, "val")
+    # Set up data loaders
     train_sampler = None
     val_sampler = None
     if torch.cuda.is_available():
@@ -178,26 +191,9 @@ def train(cfg):
             )
             footages = utils.helpers.var_or_cuda(data["footage"], gancraft_g.device)
             masks = utils.helpers.var_or_cuda(data["mask"], gancraft_g.device)
-            if cfg.NETWORK.GANCRAFT.BUILDING_MODE:
-                masks[
-                    ~torch.isin(
-                        voxel_id[:, None, ..., 0, 0],
-                        torch.tensor(
-                            [
-                                cfg.NETWORK.GANCRAFT.FACADE_CLS_ID,
-                                cfg.NETWORK.GANCRAFT.ROOF_CLS_ID,
-                            ],
-                            device=gancraft_g.device,
-                        ),
-                    )
-                ] = 0
-            else:
-                masks[
-                    voxel_id[:, None, ..., 0, 0] == cfg.NETWORK.GANCRAFT.FACADE_CLS_ID
-                ] = 0
 
             seg_maps = utils.helpers.masks_to_onehots(
-                data["voxel_id"][..., 0, 0], cfg.NETWORK.GANCRAFT.N_CLASSES
+                data["voxel_id"][..., 0, 0], train_dataset.get_n_classes()
             )
             footprint_bboxes = (
                 None if "footprint_bboxes" not in data else data["footprint_bboxes"]
@@ -217,8 +213,8 @@ def train(cfg):
             real_labels = gancraft_d(footages, seg_maps, masks)
 
             gan_loss_weights = None
-            if cfg.NETWORK.GANCRAFT.BUILDING_MODE:
-                gan_loss_weights = F.interpolate(masks, scale_factor=0.25)
+            # BLDG Mode
+            # gan_loss_weights = F.interpolate(masks, scale_factor=0.25)
 
             fake_loss = gan_loss(fake_labels, False, gan_loss_weights, dis_update=True)
             real_loss = gan_loss(real_labels, True, gan_loss_weights, dis_update=True)
