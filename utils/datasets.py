@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 21:14:24
+# @Last Modified at: 2024-07-13 14:06:32
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -60,7 +60,8 @@ class CityDataset(torch.utils.data.Dataset):
         self.transforms = None
 
     def get_n_classes(self):
-        return self.cfg.N_CLASSES + 1 if self.inst == "BLDG" else self.cfg.N_CLASSES
+        cfg = self.cfg if self.inst is None else self.cfg[self.inst]
+        return cfg.N_CLASSES
 
     def get_delimeter(self):
         vol_size = self.get_vol_size()

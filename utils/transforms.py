@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 21:10:50
+# @Last Modified at: 2024-07-15 19:59:14
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -100,7 +100,9 @@ class RandomCrop(object):
             offset_x = self._get_offset(image_w, patch_w)
             offset_y = self._get_offset(image_h, patch_h)
         elif self.mode == "instance":
-            x, y = self._get_instance_bbox(np.isin(data["voxel_id"][..., 0, 0], data["inst"]))
+            x, y = self._get_instance_bbox(
+                np.isin(data["voxel_id"][..., 0, 0], data["inst"])
+            )
             cx, cy = np.random.randint(x[0], x[1]), np.random.randint(y[0], y[1])
             offset_x = min(max(0, cx - patch_w // 2), image_w - patch_w)
             offset_y = min(max(0, cy - patch_h // 2), image_h - patch_h)
@@ -222,11 +224,13 @@ class InstanceToSemantic(object):
 
     def _instances_to_semantic(self, ins_map, mapper):
         if mapper is not None:
+            instances = []
             # Instance Mode: the specific building instance are mapped to its semantic label
             for src, dst in mapper.items():
                 ins_map[ins_map == src] = dst
+                instances.append(dst)
             # The rest instances are set to NULL
-            ins_map[ins_map >= self.min_instances] = 0
+            ins_map[~np.isin(ins_map, instances)] = 0
         else:
             # Background Mode: all instances are set to their semantic classes.
             for sc in self.semantic_classes.values():
