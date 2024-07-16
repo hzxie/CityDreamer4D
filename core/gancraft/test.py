@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:46:36
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 11:07:29
+# @Last Modified at: 2024-07-16 14:01:33
 # @Email:  root@haozhexie.com
 
 import logging
@@ -64,19 +64,17 @@ def test(cfg, test_data_loader=None, gancraft=None):
     for idx, data in enumerate(test_data_loader):
         with torch.no_grad():
             hf_seg = utils.helpers.var_or_cuda(
-                torch.cat([data["hf"], data["seg"]], dim=1), gancraft.device
+                torch.cat([data["td_hf"], data["seg_lyt"]], dim=1), gancraft.device
             )
             voxel_id = utils.helpers.var_or_cuda(data["voxel_id"], gancraft.device)
             depth2 = utils.helpers.var_or_cuda(data["depth2"], gancraft.device)
             raydirs = utils.helpers.var_or_cuda(data["raydirs"], gancraft.device)
             cam_origin = utils.helpers.var_or_cuda(data["cam_origin"], gancraft.device)
             footage = utils.helpers.var_or_cuda(data["footage"], gancraft.device)
-            footprint_bboxes = (
-                None if "footprint_bboxes" not in data else data["footprint_bboxes"]
-            )
+            ftp_stats = None if "ftp_stats" not in data else data["ftp_stats"]
 
             fake_imgs = gancraft(
-                hf_seg, voxel_id, depth2, raydirs, cam_origin, footprint_bboxes
+                hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
             )
             loss = l1_loss(fake_imgs, footage)
             test_losses.update([loss.item()])
@@ -88,6 +86,11 @@ def test(cfg, test_data_loader=None, gancraft=None):
                             torch.cat([fake_imgs, footage], dim=3), "RGB"
                         )
                     )
+                    # import cv2
+                    # cv2.imwrite(
+                    #     "output/test.jpg",
+                    #     key_frames["GANCraft/Image/%04d" % idx][..., ::-1] * 255,
+                    # )
 
                 logging.info(
                     "Test[%d/%d] Losses = %s"

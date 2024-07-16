@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 10:42:13
+# @Last Modified at: 2024-07-16 13:40:42
 # @Email:  root@haozhexie.com
 
 import copy
@@ -183,7 +183,7 @@ def train(cfg):
                     pg["lr"] = lr
 
             hf_seg = utils.helpers.var_or_cuda(
-                torch.cat([data["hf"], data["seg"]], dim=1), gancraft_g.device
+                torch.cat([data["td_hf"], data["seg_lyt"]], dim=1), gancraft_g.device
             )
             voxel_id = utils.helpers.var_or_cuda(data["voxel_id"], gancraft_g.device)
             depth2 = utils.helpers.var_or_cuda(data["depth2"], gancraft_g.device)
@@ -197,9 +197,7 @@ def train(cfg):
             seg_maps = utils.helpers.masks_to_onehots(
                 data["voxel_id"][..., 0, 0], train_dataset.get_n_classes()
             )
-            footprint_bboxes = (
-                None if "footprint_bboxes" not in data else data["footprint_bboxes"]
-            )
+            ftp_stats = None if "ftp_stats" not in data else data["ftp_stats"]
 
             # Discriminator Update Step
             utils.helpers.requires_grad(gancraft_g, False)
@@ -207,7 +205,7 @@ def train(cfg):
 
             with torch.no_grad():
                 fake_imgs = gancraft_g(
-                    hf_seg, voxel_id, depth2, raydirs, cam_origin, footprint_bboxes
+                    hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
                 )
                 fake_imgs = fake_imgs.detach()
 
@@ -230,7 +228,7 @@ def train(cfg):
             utils.helpers.requires_grad(gancraft_g, True)
 
             fake_imgs = gancraft_g(
-                hf_seg, voxel_id, depth2, raydirs, cam_origin, footprint_bboxes
+                hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
             )
             fake_labels = gancraft_d(fake_imgs, seg_maps, masks)
             _l1_loss = l1_loss(fake_imgs * masks, footages * masks)

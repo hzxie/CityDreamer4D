@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 11:07:16
+# @Last Modified at: 2024-07-16 14:00:49
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -20,7 +20,7 @@ cfg.DATASETS                                     = EasyDict()
 cfg.DATASETS.GOOGLE_EARTH                        = EasyDict()
 cfg.DATASETS.GOOGLE_EARTH.FTG_DIR                = "./data/google-earth"
 cfg.DATASETS.GOOGLE_EARTH.OSM_DIR                = "./data/osm"
-cfg.DATASETS.GOOGLE_EARTH.PIN_MEMORY             = ["hf", "seg", "ftp_stats"]
+cfg.DATASETS.GOOGLE_EARTH.PIN_MEMORY             = ["td_hf", "seg_lyt", "ftp_stats"]
 cfg.DATASETS.GOOGLE_EARTH.N_REPEAT               = 1
 cfg.DATASETS.GOOGLE_EARTH.MAX_HEIGHT             = 640
 cfg.DATASETS.GOOGLE_EARTH.N_VIEWS                = 60

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 11:07:00
+# @Last Modified at: 2024-07-16 13:50:54
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -53,7 +53,6 @@ class CityDataset(torch.utils.data.Dataset):
         self.cfg = cfg
         self.split = split
         self.inst = inst
-        self.fields = ["hf", "seg", "footage", "raycasting"]
         self.memcached = {}
         self.renderings = []
         self.n_renderings = 0
@@ -92,10 +91,12 @@ class CityDataset(torch.utils.data.Dataset):
         rendering = self.renderings[idx % self.n_renderings]
         data = utils.io.IO.get(rendering["raycasting"])
         # print(data.keys())    # dict_keys(['voxel_id', 'depth2', 'raydirs', 'cam_origin', 'img_center', 'mask'])
-        data["hf"] = self._get_height_field(rendering["hf"], self.cfg)
-        data["seg"] = self._get_seg_layout(rendering["seg"])
+        data["td_hf"] = self._get_height_field(rendering["td_hf"], self.cfg)
+        data["seg_lyt"] = self._get_seg_layout(rendering["seg_lyt"])
         data["footage"] = self._get_footage_img(rendering["footage"])
-        data["ftp_stats"] = self._get_ftp_stats(rendering["ftp_stats"])
+        if self.inst is not None:
+            data["ftp_stats"] = self._get_ftp_stats(rendering["ftp_stats"])
+
         data = self.transforms(data)
         return data
 
@@ -128,9 +129,9 @@ class CityDataset(torch.utils.data.Dataset):
                     continue
                 elif v in self.memcached:
                     continue
-                elif k == "hf":
+                elif k == "td_hf":
                     self.memcached[v] = self._get_height_field(v, cfg)
-                elif k == "seg":
+                elif k == "seg_lyt":
                     self.memcached[v] = self._get_seg_layout(v)
                 elif k == "ftp_stats":
                     self.memcached[v] = self._get_ftp_stats(v)
@@ -148,7 +149,7 @@ class CityDataset(torch.utils.data.Dataset):
                 },
                 # "img_center" is the center of the BEV image (compatible with CityDreamer)
                 # Additional data with keys "img_center", "ftp_stats" used in BevCrop.
-                "objects": ["hf", "seg"],
+                "objects": ["td_hf", "seg_lyt"],
             },
             "RandomCrop": {
                 "callback": "RandomCrop",
@@ -207,21 +208,21 @@ class CityDataset(torch.utils.data.Dataset):
                     "semantic_classes": semantic_classes,
                     "min_instances": cfg.MIN_INSTANCE,
                 },
-                "objects": ["voxel_id", "seg"],
+                "objects": ["voxel_id", "seg_lyt"],
             },
             "ToOneHot": {
                 "callback": "ToOneHot",
                 "parameters": {
                     "n_classes": self.get_n_classes(layout=True),
                 },
-                "objects": ["seg"],
+                "objects": ["seg_lyt"],
             },
             "ToTensor": {
                 "callback": "ToTensor",
                 "parameters": None,
                 "objects": [
-                    "hf",
-                    "seg",
+                    "td_hf",
+                    "seg_lyt",
                     "voxel_id",
                     "depth2",
                     "raydirs",
@@ -264,12 +265,14 @@ class GoogleEarthDataset(CityDataset):
         )
 
     def _get_renderings(self, cfg, split):
-        trajectories = sorted(os.listdir(cfg.FTG_DIR))
+        trajectories = sorted(os.listdir(cfg.FTG_DIR))[:10]
         files = [
             {
                 "name": "%s/%02d" % (t, i),
-                "hf": os.path.join(cfg.OSM_DIR, self._get_trajectory_city(t), "hf.png"),
-                "seg": os.path.join(
+                "td_hf": os.path.join(
+                    cfg.OSM_DIR, self._get_trajectory_city(t), "hf.png"
+                ),
+                "seg_lyt": os.path.join(
                     cfg.OSM_DIR, self._get_trajectory_city(t), "seg.png"
                 ),
                 "footage": os.path.join(
@@ -392,8 +395,8 @@ class CitySampleDataset(CityDataset):
         files = [
             {
                 "name": "%s/%s/%04d" % (c, s, i),
-                "hf": os.path.join(cfg.DIR, c, "HeightField.png"),
-                "seg": os.path.join(cfg.DIR, c, "SegLayout.png"),
+                "td_hf": os.path.join(cfg.DIR, c, "HeightField.png"),
+                "seg_lyt": os.path.join(cfg.DIR, c, "SegLayout.png"),
                 "footage": os.path.join(
                     cfg.DIR,
                     c,
