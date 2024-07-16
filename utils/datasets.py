@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-13 14:06:32
+# @Last Modified at: 2024-07-16 11:07:00
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -59,9 +59,16 @@ class CityDataset(torch.utils.data.Dataset):
         self.n_renderings = 0
         self.transforms = None
 
-    def get_n_classes(self):
-        cfg = self.cfg if self.inst is None else self.cfg[self.inst]
-        return cfg.N_CLASSES
+    def get_n_classes(self, layout=False):
+        if self.inst is None:
+            return self.cfg.N_CLASSES
+        elif self.inst == "BLDG":
+            # In layout mode, FACADE and ROOF are considered as the same class
+            return self.cfg.N_CLASSES if layout else self.cfg.BLDG.N_CLASSES
+        elif self.inst == "CAR":
+            raise NotImplementedError
+        else:
+            raise ValueError("Unknown mode: %s" % self.inst)
 
     def get_delimeter(self):
         vol_size = self.get_vol_size()
@@ -88,7 +95,7 @@ class CityDataset(torch.utils.data.Dataset):
         data["hf"] = self._get_height_field(rendering["hf"], self.cfg)
         data["seg"] = self._get_seg_layout(rendering["seg"])
         data["footage"] = self._get_footage_img(rendering["footage"])
-        data["building_stats"] = self._get_building_stats(rendering["building_stats"])
+        data["ftp_stats"] = self._get_ftp_stats(rendering["ftp_stats"])
         data = self.transforms(data)
         return data
 
@@ -104,7 +111,7 @@ class CityDataset(torch.utils.data.Dataset):
 
         return np.array(utils.io.IO.get(file_path).convert("P"))
 
-    def _get_building_stats(self, file_path):
+    def _get_ftp_stats(self, file_path):
         if file_path in self.memcached:
             return self.memcached[file_path]
 
@@ -125,8 +132,8 @@ class CityDataset(torch.utils.data.Dataset):
                     self.memcached[v] = self._get_height_field(v, cfg)
                 elif k == "seg":
                     self.memcached[v] = self._get_seg_layout(v)
-                elif k == "building_stats":
-                    self.memcached[v] = self._get_building_stats(v)
+                elif k == "ftp_stats":
+                    self.memcached[v] = self._get_ftp_stats(v)
 
     def _get_transformations(
         self, cfg, bev_crop_size, img_crop_size, instances=None, semantic_classes={}
@@ -140,7 +147,7 @@ class CityDataset(torch.utils.data.Dataset):
                     "width": bev_crop_size,
                 },
                 # "img_center" is the center of the BEV image (compatible with CityDreamer)
-                # Additional data with keys "img_center", "building_stats" used in BevCrop.
+                # Additional data with keys "img_center", "ftp_stats" used in BevCrop.
                 "objects": ["hf", "seg"],
             },
             "RandomCrop": {
@@ -205,7 +212,7 @@ class CityDataset(torch.utils.data.Dataset):
             "ToOneHot": {
                 "callback": "ToOneHot",
                 "parameters": {
-                    "n_classes": self.get_n_classes(),
+                    "n_classes": self.get_n_classes(layout=True),
                 },
                 "objects": ["seg"],
             },
@@ -271,7 +278,7 @@ class GoogleEarthDataset(CityDataset):
                 "raycasting": os.path.join(
                     cfg.FTG_DIR, t, "raycasting", "%s_%02d.pkl" % (t, i)
                 ),
-                "building_stats": os.path.join(cfg.FTG_DIR, t, "%s.pkl" % t),
+                "ftp_stats": os.path.join(cfg.FTG_DIR, t, "%s.pkl" % t),
             }
             for t in trajectories
             for i in range(cfg.N_VIEWS)
@@ -395,7 +402,7 @@ class CitySampleDataset(CityDataset):
                     "%sSequence.%04d.jpeg" % (c, i),
                 ),
                 "raycasting": os.path.join(cfg.DIR, c, "Raycasting", "%04d.pkl" % i),
-                "building_stats": os.path.join(cfg.DIR, c, "Footprints.pkl"),
+                "ftp_stats": os.path.join(cfg.DIR, c, "Footprints.pkl"),
             }
             for c in cities
             for i in range(cfg.N_VIEWS)

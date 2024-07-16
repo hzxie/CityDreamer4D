@@ -4,9 +4,9 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-12 19:53:21
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-15 21:03:23
+# @Last Modified at: 2024-07-16 11:09:13
 # @Email:  root@haozhexie.com
-# @Ref: https://github.com/FrozenBurning/SceneDreamer
+# @Ref: https://github.com/hzxie/CityDreamer/blob/master/models/gancraft.py
 
 import numpy as np
 import torch
@@ -25,13 +25,12 @@ class GanCraftGenerator(torch.nn.Module):
         self.delimeter = delimeter
         self.center_offset = center_offset
         # Subnetworks
-        self.render_net = RenderMLP(cfg, n_classes)
+        self.render_net = RenderMLP(cfg, n_classes["SMT"])
         self.denoiser = RenderCNN(cfg)
         if cfg.ENCODER == "GLOBAL":
-            self.encoder = GlobalEncoder(cfg, n_classes)
+            self.encoder = GlobalEncoder(cfg, n_classes["LYT"])
         elif cfg.ENCODER == "LOCAL":
-            # TODO: Temporary fix for BLDG mode.
-            self.encoder = LocalEncoder(cfg, n_classes - 1)
+            self.encoder = LocalEncoder(cfg, n_classes["LYT"])
         else:
             raise ValueError("Unknown encoder: %s" % cfg.ENCODER)
 
@@ -64,7 +63,7 @@ class GanCraftGenerator(torch.nn.Module):
         depth2,
         raydirs,
         cam_origin,
-        bldg_stats=None,
+        ftp_stats=None,
         z=None,
         deterministic=False,
     ):
@@ -77,7 +76,7 @@ class GanCraftGenerator(torch.nn.Module):
             intersection.
             raydirs (N x H x W x 1 x 3 tensor): The direction of each ray.
             cam_origin (N x 3 tensor): Camera origins.
-            bldg_stats (N x 5 tensor): The dy, dx, h, w, ID of the target instances. (Not used in BG mode)
+            ftp_stats (N x 5 tensor): The dy, dx, h, w, ID of the target instances. (Not used in BG mode)
             z (N x STYLE_DIM tensor): The style vector.
             deterministic (bool): Whether to use equal-distance sampling instead of random stratified sampling.
         Returns:
@@ -103,7 +102,7 @@ class GanCraftGenerator(torch.nn.Module):
             raydirs,
             cam_origin,
             z,
-            bldg_stats,
+            ftp_stats,
             deterministic,
         )
         fake_images = self._forward_global(net_out, z)
@@ -117,7 +116,7 @@ class GanCraftGenerator(torch.nn.Module):
         raydirs,
         cam_origin,
         z,
-        bldg_stats=None,
+        ftp_stats=None,
         deterministic=False,
     ):
         r"""Sample points along rays, forwarding the per-point MLP and aggregate pixel features
@@ -129,7 +128,7 @@ class GanCraftGenerator(torch.nn.Module):
             raydirs (N x H x W x 1 x 3 tensor): The direction of each ray.
             cam_origin (N x 3 tensor): Camera origins.
             z (N x C3 tensor): Intermediate style vectors.
-            bldg_stats (N x 5 tensor): The dy, dx, h, w, ID of the target instances. (Not used in BG mode)
+            ftp_stats (N x 5 tensor): The dy, dx, h, w, ID of the target instances. (Not used in BG mode)
             deterministic (bool): Whether to use equal-distance sampling instead of random stratified sampling.
         """
         # Generate sky_mask; PE transform on ray direction.
@@ -145,28 +144,28 @@ class GanCraftGenerator(torch.nn.Module):
                 depth2,
                 raydirs,
                 cam_origin,
-                bldg_stats,
+                ftp_stats,
                 deterministic,
             )
             # Generate per-sample segmentation label
-            seg_map_bev = torch.gather(voxel_id, -2, new_idx)
+            seg_map_pov = torch.gather(voxel_id, -2, new_idx)
             # print(seg_map_bev.size())  # torch.Size([N, H, W, n_samples + 1, 1])
-            seg_map_bev_onehot = torch.zeros(
+            seg_map_pov_onehot = torch.zeros(
                 [
-                    seg_map_bev.size(0),
-                    seg_map_bev.size(1),
-                    seg_map_bev.size(2),
-                    seg_map_bev.size(3),
-                    self.n_classes,
+                    seg_map_pov.size(0),
+                    seg_map_pov.size(1),
+                    seg_map_pov.size(2),
+                    seg_map_pov.size(3),
+                    self.n_classes["SMT"],
                 ],
                 dtype=torch.float,
                 device=voxel_id.device,
             )
-            # print(seg_map_bev_onehot.size())  # torch.Size([N, H, W, n_samples + 1, 1])
-            seg_map_bev_onehot.scatter_(-1, seg_map_bev.long(), 1.0)
+            # print(seg_map_pov_onehot.size())  # torch.Size([N, H, W, n_samples + 1, 1])
+            seg_map_pov_onehot.scatter_(-1, seg_map_pov.long(), 1.0)
 
         net_out_s, net_out_c = self._forward_perpix_sub(
-            features, normalized_cord, z, seg_map_bev_onehot
+            features, normalized_cord, z, seg_map_pov_onehot
         )
 
         # Blending
@@ -224,7 +223,7 @@ class GanCraftGenerator(torch.nn.Module):
         depth2,
         raydirs,
         cam_origin,
-        bldg_stats=None,
+        ftp_stats=None,
         deterministic=False,
     ):
         # Random sample points along the ray
@@ -241,12 +240,12 @@ class GanCraftGenerator(torch.nn.Module):
         world_coord = raydirs * rand_depth + cam_origin[:, None, None, None, :]
         # assert worldcoord2.shape[-1] == 3
         # Make the instance object-centric
-        if bldg_stats is not None:
-            bldg_stats = bldg_stats[:, None, None, None, :].repeat(
+        if ftp_stats is not None:
+            ftp_stats = ftp_stats[:, None, None, None, :].repeat(
                 1, world_coord.size(1), world_coord.size(2), world_coord.size(3), 1
             )
-            world_coord[..., 0] -= bldg_stats[..., 0] + self.center_offset
-            world_coord[..., 1] -= bldg_stats[..., 1] + self.center_offset
+            world_coord[..., 0] -= ftp_stats[..., 0] + self.center_offset
+            world_coord[..., 1] -= ftp_stats[..., 1] + self.center_offset
             zero_rd_mask = raydirs.repeat(1, 1, 1, n_samples, 1)
             world_coord[zero_rd_mask == 0] = 0
 
@@ -383,14 +382,14 @@ class GanCraftGenerator(torch.nn.Module):
         )
         return cumsum
 
-    def _forward_perpix_sub(self, features, normalized_cord, z, seg_map_bev_onehot):
+    def _forward_perpix_sub(self, features, normalized_cord, z, seg_map_pov_onehot):
         r"""Forwarding the MLP.
 
         Args:
             features (N x C1 x ...? tensor): Local features determined by the current pixel.
             normalized_coord (N x H x W x L x 3 tensor): 3D world coordinates of sampled points. L is number of samples; N is batch size, always 1.
             z (N x C3 tensor): Intermediate style vectors.
-            seg_map_bev_onehot (N x H x W x L x C4): One-hot segmentation maps.
+            seg_map_pov_onehot (N x H x W x L x C4): One-hot segmentation maps in perspective view.
         Returns:
             net_out_s (N x H x W x L x 1 tensor): Opacities.
             net_out_c (N x H x W x L x C5 tensor): Color embeddings.
@@ -458,7 +457,7 @@ class GanCraftGenerator(torch.nn.Module):
             elif self.cfg.POS_EMD_INCUDE_FEATURES:
                 feature_in = feature_in
 
-        net_out_s, net_out_c = self.render_net(feature_in, z, seg_map_bev_onehot)
+        net_out_s, net_out_c = self.render_net(feature_in, z, seg_map_pov_onehot)
         return net_out_s, net_out_c
 
     def _forward_global(self, net_out, z):

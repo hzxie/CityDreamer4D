@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-15 19:59:14
+# @Last Modified at: 2024-07-16 10:30:29
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -203,7 +203,7 @@ class BevCrop(object):
             assert type(data["inst"]) == list
             inst = data["inst"][0]
             # https://github.com/hzxie/city-dreamer/blob/master/utils/datasets.py?ref_type=heads#L489
-            dx, dy, w, h = data["building_stats"][inst]
+            dx, dy, w, h = data["ftp_stats"][inst]
             data["building_stat"] = torch.Tensor([dy, dx, h, w, inst])
             cx = int(cx + data["building_stat"][1])
             cy = int(cy + data["building_stat"][0])

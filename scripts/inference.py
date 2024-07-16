@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-15 21:08:09
+# @Last Modified at: 2024-07-16 13:24:00
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -35,7 +35,7 @@ import utils.datasets
 import utils.helpers
 
 
-def _get_cfg_value(key, dataset=None):
+def get_cfg_value(key, dataset=None):
     assert dataset in ["GOOGLE_EARTH", "CITY_SAMPLE", None]
     CONSTANTS = {
         "IMAGE_HEIGHT": 540,
@@ -66,7 +66,7 @@ def _get_dataset_cfg_value(key, dataset):
     }
     # The constants are not defined in config.py but aligned with dataset_generator.py
     CFG_VALUES = {
-        "IMAGE_VFOV": {"GOOGLE_EARTH": 36.86178122935623, "CITY_SAMPLE": None},
+        "IMAGE_VFOV": {"GOOGLE_EARTH": 10.019869883021967, "CITY_SAMPLE": None},
         "BLDG_ROOF_OFFSET": {"GOOGLE_EARTH": -1, "CITY_SAMPLE": 1},
         "BLDG_INST_MULTIPLIER": {"GOOGLE_EARTH": 2, "CITY_SAMPLE": 4},
     }
@@ -134,7 +134,10 @@ def _get_model(dataset, ckpt_file_path):
     city_dataset = utils.datasets.CityDataset(dt_cfg, None, inst)
     model = models.gancraft.GanCraftGenerator(
         cfg=model_cfg,
-        n_classes=city_dataset.get_n_classes(),
+        n_classes={
+            "SMT": city_dataset.get_n_classes(),
+            "LYT": city_dataset.get_n_classes(layout=True),
+        },
         delimeter=city_dataset.get_delimeter(),
         vol_size=city_dataset.get_vol_size(),
         center_offset=city_dataset.get_center_offset(),
@@ -167,12 +170,12 @@ def get_osm_city_layout(
 ):
     hf = np.array(Image.open(os.path.join(city_osm_dir, "hf.png")))
     seg = np.array(Image.open(os.path.join(city_osm_dir, "seg.png")).convert("P"))
-    ins_seg, building_stats = _get_instance_seg_layout(
+    ins_seg, bldg_stats = _get_instance_seg_layout(
         seg, bldg_facade_cid, bldg_inst_mult, min_bldg_inst
     )
     hf = _clip_height_field(hf, bldg_max_height)
 
-    return hf.astype(np.int32), ins_seg.astype(np.int32), building_stats
+    return hf.astype(np.int32), ins_seg.astype(np.int32), bldg_stats
 
 
 def _get_instance_seg_layout(
@@ -242,9 +245,7 @@ def get_part_hf_seg(hf, seg, cx, cy, patch_size):
     return part_hf, part_seg
 
 
-def get_part_building_stats(
-    part_seg, bldg_stats, cx, cy, bldg_inst_mult, min_bldg_inst
-):
+def get_part_bldg_stats(part_seg, bldg_stats, cx, cy, bldg_inst_mult, min_bldg_inst):
     _buildings = np.unique(part_seg[part_seg > min_bldg_inst])
     _bldg_stats = {}
     for b in _buildings:
@@ -325,7 +326,7 @@ def get_orbit_camera_positions(radius, altitude, vol_size_layout, n_viewpoints):
 def get_voxel_intersection_perspective(
     seg_volume, camera_location, img_sizes, img_vfov, n_voxel_samples
 ):
-    CAMERA_FOCAL = img_sizes["HEIGHT"] / 2 / np.tan(np.deg2rad(img_vfov)) * 2.06
+    CAMERA_FOCAL = img_sizes["HEIGHT"] / 2 / np.tan(np.deg2rad(img_vfov))
     # print(seg_volume.size())  # torch.Size([1536, 1536, 640])
     camera_target = {
         "x": seg_volume.size(1) // 2 - 1,
@@ -443,7 +444,7 @@ def render_bg(
                 depth2=depth2[:, psy:pey, psx:pex],
                 raydirs=raydirs[:, psy:pey, psx:pex],
                 cam_origin=cam_origin,
-                bldg_stats=None,
+                ftp_stats=None,
                 z=z,
                 deterministic=True,
             )
@@ -541,7 +542,7 @@ def render_bldg(
                     depth2[:, psy:pey, psx:pex],
                     _raydirs[:, psy:pey, psx:pex],
                     cam_origin,
-                    bldg_stats=torch.from_numpy(np.array(bldg_stats)).unsqueeze(dim=0),
+                    ftp_stats=torch.from_numpy(np.array(bldg_stats)).unsqueeze(dim=0),
                     z=building_z,
                     deterministic=True,
                 )
@@ -656,10 +657,10 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
     logging.info("Generating city layouts ...")
     hf, seg, bldg_stats = get_osm_city_layout(
         city_osm_dir,
-        _get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
-        _get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
-        _get_cfg_value("BLDG_INST_RANGE", dataset)[0],
-        _get_cfg_value("BLDG_MAX_HEIGHT", dataset),
+        get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
+        get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
+        get_cfg_value("BLDG_INST_RANGE", dataset)[0],
+        get_cfg_value("BLDG_MAX_HEIGHT", dataset),
     )
     assert hf.shape == seg.shape
     logging.info("City Layout Patch Size (HxW): %s" % (hf.shape,))
@@ -669,8 +670,8 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
     bg_z, bldg_zs = get_latent_codes(
         bldg_stats,
         bg_model.module.cfg.STYLE_DIM,
-        _get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
-        _get_cfg_value("BLDG_INST_RANGE", dataset)[0],
+        get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
+        get_cfg_value("BLDG_INST_RANGE", dataset)[0],
         bldg_model.output_device,
     )
 
@@ -678,45 +679,45 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
     cy, cx = seg.shape[0] // 2, seg.shape[1] // 2
     # Generate local image patch of the height field and seg map
     part_hf, part_seg = get_part_hf_seg(
-        hf, seg, cx, cy, _get_cfg_value("VOL_SIZE/EXTEND", dataset)
+        hf, seg, cx, cy, get_cfg_value("VOL_SIZE/EXTEND", dataset)
     )
     # print(part_hf.shape)    # (2880, 2880)
     # print(part_seg.shape)   # (2880, 2880)
 
     # Recalculate the building positions based on the current patch
-    bldg_stats = get_part_building_stats(
+    bldg_stats = get_part_bldg_stats(
         part_seg,
         bldg_stats,
         cx,
         cy,
-        _get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
-        _get_cfg_value("BLDG_INST_RANGE", dataset)[0],
+        get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
+        get_cfg_value("BLDG_INST_RANGE", dataset)[0],
     )
     # Generate the concatenated height field and seg. map tensor
     hf_seg = get_hf_seg_tensor(
         part_hf,
         part_seg,
-        _get_cfg_value("BLDG_MAX_HEIGHT", dataset),
-        _get_cfg_value("N_LAYOUT_CLASSES", dataset),
+        get_cfg_value("BLDG_MAX_HEIGHT", dataset),
+        get_cfg_value("N_LAYOUT_CLASSES", dataset),
         bg_model.output_device,
     )
     # print(hf_seg.size())    # torch.Size([1, 8, 2880, 2880])
     # Build seg_volume
     logging.info("Generating seg volume ...")
     VOL_SIZES = {
-        "LAYOUT": _get_cfg_value("VOL_SIZE/LAYOUT", dataset),
-        "BLDG": _get_cfg_value("VOL_SIZE/BLDG", dataset),
-        "EXT": _get_cfg_value("VOL_SIZE/EXTEND", dataset),
+        "LAYOUT": get_cfg_value("VOL_SIZE/LAYOUT", dataset),
+        "BLDG": get_cfg_value("VOL_SIZE/BLDG", dataset),
+        "EXT": get_cfg_value("VOL_SIZE/EXTEND", dataset),
     }
     seg_volume = get_seg_volume(
         part_hf,
         part_seg,
         VOL_SIZES,
         {
-            "ROOF_HEIGHT": _get_cfg_value("BLDG_ROOF_HEIGHT", dataset),
-            "ROOF_OFFSET": _get_cfg_value("BLDG_ROOF_OFFSET", dataset),
-            "INST_RANGE": _get_cfg_value("BLDG_INST_RANGE", dataset),
-            "MAX_HEIGHT": _get_cfg_value("BLDG_MAX_HEIGHT", dataset),
+            "ROOF_HEIGHT": get_cfg_value("BLDG_ROOF_HEIGHT", dataset),
+            "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET", dataset),
+            "INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
+            "MAX_HEIGHT": get_cfg_value("BLDG_MAX_HEIGHT", dataset),
         },
     )
 
@@ -728,15 +729,15 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
     cam_pos = get_orbit_camera_positions(
         radius,
         altitude,
-        _get_cfg_value("VOL_SIZE/LAYOUT", dataset),
-        _get_cfg_value("N_VIEWPOINTS", dataset),
+        get_cfg_value("VOL_SIZE/LAYOUT", dataset),
+        get_cfg_value("N_VIEWPOINTS", dataset),
     )
 
     logging.info("Rendering videos ...")
     IMG_CFG = {
-        "HEIGHT": _get_cfg_value("IMAGE_HEIGHT", dataset),
-        "WIDTH": _get_cfg_value("IMAGE_WIDTH", dataset),
-        "PADDING": _get_cfg_value("IMAGE_PADDING", dataset),
+        "HEIGHT": get_cfg_value("IMAGE_HEIGHT", dataset),
+        "WIDTH": get_cfg_value("IMAGE_WIDTH", dataset),
+        "PADDING": get_cfg_value("IMAGE_PADDING", dataset),
     }
     frames = []
     for _, cp in enumerate(tqdm(cam_pos)):
@@ -744,8 +745,8 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
             seg_volume,
             cp,
             IMG_CFG,
-            _get_cfg_value("IMAGE_VFOV", dataset),
-            _get_cfg_value("N_VOXEL_SAMPLES", dataset),
+            get_cfg_value("IMAGE_VFOV", dataset),
+            get_cfg_value("N_VOXEL_SAMPLES", dataset),
         )
         img = render_static(
             patch_size,
@@ -762,12 +763,12 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
             VOL_SIZES,
             IMG_CFG,
             {
-                "INST_RANGE": _get_cfg_value("BLDG_INST_RANGE", dataset),
-                "MULTIPLIER": _get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
-                "ROAD_CID": _get_cfg_value("CLASSES", dataset)["ROAD"],
-                "FACADE_CID": _get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
-                "ROOF_CID": _get_cfg_value("CLASSES", dataset)["BLDG_ROOF"],
-                "ROOF_OFFSET": _get_cfg_value("BLDG_ROOF_OFFSET", dataset),
+                "INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
+                "MULTIPLIER": get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
+                "ROAD_CID": get_cfg_value("CLASSES", dataset)["ROAD"],
+                "FACADE_CID": get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
+                "ROOF_CID": get_cfg_value("CLASSES", dataset)["BLDG_ROOF"],
+                "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET", dataset),
             },
         )
         img = (utils.helpers.tensor_to_image(img, "RGB") * 255).astype(np.uint8)
@@ -805,12 +806,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--patch_height",
-        default=_get_cfg_value("IMAGE_HEIGHT") // 4,
+        default=get_cfg_value("IMAGE_HEIGHT") // 4,
         type=int,
     )
     parser.add_argument(
         "--patch_width",
-        default=_get_cfg_value("IMAGE_WIDTH") // 4,
+        default=get_cfg_value("IMAGE_WIDTH") // 4,
         type=int,
     )
     parser.add_argument(

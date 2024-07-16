@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-15 20:30:06
+# @Last Modified at: 2024-07-16 11:07:16
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -20,7 +20,7 @@ cfg.DATASETS                                     = EasyDict()
 cfg.DATASETS.GOOGLE_EARTH                        = EasyDict()
 cfg.DATASETS.GOOGLE_EARTH.FTG_DIR                = "./data/google-earth"
 cfg.DATASETS.GOOGLE_EARTH.OSM_DIR                = "./data/osm"
-cfg.DATASETS.GOOGLE_EARTH.PIN_MEMORY             = ["hf", "seg", "building_stats"]
+cfg.DATASETS.GOOGLE_EARTH.PIN_MEMORY             = ["hf", "seg", "ftp_stats"]
 cfg.DATASETS.GOOGLE_EARTH.N_REPEAT               = 1
 cfg.DATASETS.GOOGLE_EARTH.MAX_HEIGHT             = 640
 cfg.DATASETS.GOOGLE_EARTH.N_VIEWS                = 60
@@ -35,7 +35,7 @@ cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE          = 672
 cfg.DATASETS.GOOGLE_EARTH.BLDG.INS_RANGE         = [10, 65536]
 cfg.DATASETS.CITY_SAMPLE                         = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.DIR                     = "./data/city-sample"
-cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "building_stats"]
+cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "ftp_stats"]
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
 cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 384
 cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5
@@ -60,7 +60,7 @@ cfg.CONST                                        = EasyDict()
 cfg.CONST.EXP_NAME                               = ""
 cfg.CONST.N_WORKERS                              = 8
 cfg.CONST.NETWORK                                = "GANCraft"
-cfg.CONST.DATASET                                = "GOOGLE_EARTH_BLDG"
+cfg.CONST.DATASET                                = "GOOGLE_EARTH"
 
 #
 # Directories
@@ -101,11 +101,9 @@ cfg.NETWORK.GANCRAFT.ENCODER                     = "GLOBAL"     # Options: "GLOB
 cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM             = 2
 cfg.NETWORK.GANCRAFT.GLOBAL_ENCODER_N_BLOCKS     = 6
 cfg.NETWORK.GANCRAFT.LOCAL_ENCODER_NORM          = "GROUP_NORM" # Options: "GROUP_NORM", "BATCH_NORM"
-cfg.NETWORK.GANCRAFT.SKY_POS_EMD_LEVEL_RAYDIR    = 5
-cfg.NETWORK.GANCRAFT.SKY_POS_EMD_INCLUDE_RAYDIR  = True
 cfg.NETWORK.GANCRAFT.POS_EMD                     = "HASH_GRID"  # Options: "HASH_GRID", "SIN_COS"
 cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_FEATURES     = True
-cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS        = False
+cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS        = True         # Options: True, False
 cfg.NETWORK.GANCRAFT.HASH_GRID_N_LEVELS          = 16
 cfg.NETWORK.GANCRAFT.HASH_GRID_LEVEL_DIM         = 8
 cfg.NETWORK.GANCRAFT.SIN_COS_FREQ_BENDS          = 10
@@ -113,6 +111,8 @@ cfg.NETWORK.GANCRAFT.SKY_ENABLED                 = False
 cfg.NETWORK.GANCRAFT.SKY_HIDDEN_DIM              = 256
 cfg.NETWORK.GANCRAFT.SKY_OUT_DIM_COLOR           = 64
 cfg.NETWORK.GANCRAFT.SKY_GLOBAL_AVGPOOL          = False
+cfg.NETWORK.GANCRAFT.SKY_POS_EMD_LEVEL_RAYDIR    = 5
+cfg.NETWORK.GANCRAFT.SKY_POS_EMD_INCLUDE_RAYDIR  = True
 cfg.NETWORK.GANCRAFT.RENDER_HIDDEN_DIM           = 256
 cfg.NETWORK.GANCRAFT.RENDER_OUT_DIM_SIGMA        = 1
 cfg.NETWORK.GANCRAFT.RENDER_OUT_DIM_COLOR        = 64

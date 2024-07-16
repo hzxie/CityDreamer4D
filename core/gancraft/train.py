@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 20:17:15
+# @Last Modified at: 2024-07-16 10:42:13
 # @Email:  root@haozhexie.com
 
 import copy
@@ -39,7 +39,10 @@ def train(cfg):
     local_rank = utils.distributed.get_rank()
     gancraft_g = models.gancraft.GanCraftGenerator(
         cfg.NETWORK.GANCRAFT,
-        n_classes=train_dataset.get_n_classes(),
+        n_classes={
+            "SMT": train_dataset.get_n_classes(),
+            "LYT": train_dataset.get_n_classes(layout=True),
+        },
         delimeter=train_dataset.get_delimeter(),
         vol_size=train_dataset.get_vol_size(),
         center_offset=train_dataset.get_center_offset(),

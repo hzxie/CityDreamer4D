@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:46:36
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-12 20:17:23
+# @Last Modified at: 2024-07-16 11:07:29
 # @Email:  root@haozhexie.com
 
 import logging
@@ -19,10 +19,23 @@ import utils.helpers
 
 def test(cfg, test_data_loader=None, gancraft=None):
     torch.backends.cudnn.benchmark = True
+    if test_data_loader is None:
+        test_data_loader = torch.utils.data.DataLoader(
+            dataset=utils.datasets.get_dataset(cfg, cfg.CONST.DATASET, "test"),
+            batch_size=1,
+            num_workers=cfg.CONST.N_WORKERS,
+            collate_fn=utils.datasets.collate_fn,
+            pin_memory=True,
+            shuffle=False,
+        )
+
     if gancraft is None:
         gancraft = models.gancraft.GanCraftGenerator(
             cfg.NETWORK.GANCRAFT,
-            n_classes=test_data_loader.dataset.get_n_classes(),
+            n_classes={
+                "SMT": test_data_loader.dataset.get_n_classes(),
+                "LYT": test_data_loader.dataset.get_n_classes(layout=True),
+            },
             delimeter=test_data_loader.dataset.get_delimeter(),
             vol_size=test_data_loader.dataset.get_vol_size(),
             center_offset=test_data_loader.dataset.get_center_offset(),
@@ -33,20 +46,10 @@ def test(cfg, test_data_loader=None, gancraft=None):
 
         logging.info("Recovering from %s ..." % (cfg.CONST.CKPT))
         checkpoint = torch.load(cfg.CONST.CKPT)
-        if cfg.TRAIN.GANCRAFT.ENABLE_EMA:
+        if cfg.TRAIN.GANCRAFT.EMA_ENABLED:
             gancraft.load_state_dict(checkpoint["gancraft_g_ema"])
         else:
             gancraft.load_state_dict(checkpoint["gancraft_g"])
-
-    if test_data_loader is None:
-        test_data_loader = torch.utils.data.DataLoader(
-            dataset=utils.datasets.get_dataset(cfg, cfg.CONST.DATASET, "test"),
-            batch_size=1,
-            num_workers=cfg.CONST.N_WORKERS,
-            collate_fn=utils.datasets.collate_fn,
-            pin_memory=True,
-            shuffle=False,
-        )
 
     # Switch models to evaluation mode
     gancraft.eval()
