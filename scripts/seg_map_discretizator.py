@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-25 15:52:37
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-01-09 15:14:51
+# @Last Modified at: 2024-07-18 20:02:11
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -24,27 +24,49 @@ sys.path.append(PROJECT_HOME)
 import utils.helpers
 
 
+def _get_tensor(value, device):
+    return torch.tensor(value, dtype=torch.int16, device=device)
+
+
 def get_discrete_seg_maps(img):
     CLASSES = {
-        "Undefined": torch.tensor(
-            [255, 255, 255], dtype=torch.int16, device=img.device
-        ),
-        "Road": torch.tensor([255, 84, 50], dtype=torch.int16, device=img.device),
-        "Freeway": torch.tensor([230, 235, 90], dtype=torch.int16, device=img.device),
-        "Car": torch.tensor([60, 230, 110], dtype=torch.int16, device=img.device),
-        "Water": torch.tensor([140, 230, 230], dtype=torch.int16, device=img.device),
-        "Sky": torch.tensor([0, 0, 0], dtype=torch.int16, device=img.device),
-        "Ground": torch.tensor([90, 110, 240], dtype=torch.int16, device=img.device),
-        "Building": torch.tensor([180, 140, 30], dtype=torch.int16, device=img.device),
-        "Roof": torch.tensor([250, 150, 240], dtype=torch.int16, device=img.device),
+        # 0: NULL
+        _get_tensor([0, 0, 0], img.device): 0,
+        _get_tensor([200, 200, 200], img.device): 0,
+        # 1: ROAD, FWY_DECK
+        _get_tensor([210, 5, 20], img.device): 1,
+        _get_tensor([155, 0, 10], img.device): 1,
+        # 2: FWY_PILLAR, FWY_BARRIER
+        _get_tensor([220, 220, 40], img.device): 2,
+        # _get_tensor([170, 170, 5], img.device): 2,
+        # 3: CAR
+        _get_tensor([20, 220, 40], img.device): 3,
+        _get_tensor([0, 170, 0], img.device): 3,
+        # 4: WATER
+        _get_tensor([0, 160, 160], img.device): 4,
+        _get_tensor([50, 200, 200], img.device): 4,
+        # 5: SKY
+        _get_tensor([10, 10, 10], img.device): 5,
+        # 6: ZONE
+        _get_tensor([15, 15, 200], img.device): 6,
+        _get_tensor([0, 0, 150], img.device): 6,
+        # 7: BLDG_FACADE
+        _get_tensor([150, 105, 25], img.device): 7,
+        # _get_tensor([170, 170, 15], img.device): 7,
+        _get_tensor([120, 80, 5], img.device): 7,
+        # 8: BLDG_ROOF
+        _get_tensor([230, 60, 215], img.device): 8,
+        _get_tensor([160, 0, 160], img.device): 8,
     }
     h, w, _ = img.shape
     dists = torch.zeros((h, w, len(CLASSES)))
-    for idx, mean_color in enumerate(CLASSES.values()):
+    for idx, mean_color in enumerate(CLASSES.keys()):
         dists[..., idx] = torch.sum(torch.abs(img - mean_color), dim=2)
 
     dists = torch.reshape(dists, (h * w, len(CLASSES)))
-    return torch.argmin(dists, dim=1).reshape(h, w).cpu().numpy()
+    min_idx = torch.argmin(dists, dim=1).reshape(h, w).cpu().numpy()
+    class_id = np.array([class_id for class_id in CLASSES.values()])
+    return class_id[min_idx]
 
 
 def main(input_dir, output_dir):
@@ -67,7 +89,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--work_dir", default=os.path.join(PROJECT_HOME, "data", "City01")
+        "--work_dir", default=os.path.join(PROJECT_HOME, "data", "city-sample", "City01")
     )
     parser.add_argument("--input_dir", default="SemanticImage")
     parser.add_argument("--output_dir", default="SemanticImage")
