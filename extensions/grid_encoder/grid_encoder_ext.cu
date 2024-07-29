@@ -527,7 +527,8 @@ void grid_encode_backward_cuda(
   }
 }
 
-void grid_encode_forward(const torch::tensor inputs, const torch::tensor embeddings,
+void grid_encode_forward(const torch::tensor inputs,
+                         const torch::tensor embeddings,
                          const torch::tensor offsets, torch::tensor outputs,
                          const uint32_t B, const uint32_t D, const uint32_t C,
                          const uint32_t L, const float S, const uint32_t H,
@@ -562,13 +563,14 @@ void grid_encode_forward(const torch::tensor inputs, const torch::tensor embeddi
 }
 
 void grid_encode_backward(const torch::tensor grad, const torch::tensor inputs,
-                          const torch::tensor embeddings, const torch::tensor offsets,
+                          const torch::tensor embeddings,
+                          const torch::tensor offsets,
                           torch::tensor grad_embeddings, const uint32_t B,
                           const uint32_t D, const uint32_t C, const uint32_t L,
                           const float S, const uint32_t H,
-                          const bool calc_grad_inputs, const torch::tensor dy_dx,
-                          torch::tensor grad_inputs, const uint32_t gridtype,
-                          const bool align_corners) {
+                          const bool calc_grad_inputs,
+                          const torch::tensor dy_dx, torch::tensor grad_inputs,
+                          const uint32_t gridtype, const bool align_corners) {
   CHECK_CUDA(grad);
   CHECK_CUDA(inputs);
   CHECK_CUDA(embeddings);
