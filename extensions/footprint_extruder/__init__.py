@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-23 11:30:15
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-29 15:23:44
+# @Last Modified at: 2024-07-30 20:38:57
 # @Email:  root@haozhexie.com
 
 import torch
@@ -29,7 +29,6 @@ class FootprintExtruder(torch.nn.Module):
         self.bldg_inst_range = bldg_inst_range
 
     def forward(self, volume, bev_ins, tp_hf, bu_hf):
-        assert torch.max(tp_hf) < self.max_height
         return FootprintExtruderFunction.apply(
             volume,
             bev_ins,

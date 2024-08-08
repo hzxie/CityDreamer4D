@@ -1,3 +1,12 @@
+/**
+ * @File:   ray_voxel_intersection.cu
+ * @Author: Haozhe Xie
+ * @Date:   1970-01-01 07:30:00
+ * @Last Modified by: Haozhe Xie
+ * @Last Modified at: 2024-08-08 19:54:30
+ * @Email:  root@haozhexie.com
+ */
+
 // Copyright (C) 2021 NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 //
 // This work is made available under the Nvidia Source Code License-NC.
@@ -28,6 +37,8 @@
 
 #include "voxlib_common.h"
 
+#define TILE_DIM 8
+
 struct RVIP_Params {
   int voxel_dims[3];
   int voxel_strides[3];
@@ -43,17 +54,19 @@ struct RVIP_Params {
   // unsigned long seed;
 };
 
+// clang-format off
 /*
-    out_voxel_id: torch CUDA int32  [   img_dims[0], img_dims[1], max_samples,
-   1] out_depth:    torch CUDA float  [2, img_dims[0], img_dims[1], max_samples,
-   1] out_raydirs:  torch CUDA float  [   img_dims[0], img_dims[1],           1,
-   3] Image coordinates refer to the center of the pixel [0, 0, 0] at voxel
-   coordinate is at the corner of the corner block (instead of at the center)
+    out_voxel_id: torch CUDA int32  [   img_dims[0], img_dims[1], max_samples, 1] 
+    out_depth:    torch CUDA float  [2, img_dims[0], img_dims[1], max_samples, 1] 
+    out_raydirs:  torch CUDA float  [   img_dims[0], img_dims[1],           1, 3] 
+    Image coordinates refer to the center of the pixel [0, 0, 0] at voxel
+    coordinate is at the corner of the corner block (instead of at the center)
 */
-template <int TILE_DIM>
+// clang-format on
+template <typename scalar_t>
 static __global__ void ray_voxel_intersection_perspective_kernel(
-    int32_t *__restrict__ out_voxel_id, float *__restrict__ out_depth,
-    float *__restrict__ out_raydirs, const int32_t *__restrict__ in_voxel,
+    scalar_t *__restrict__ out_voxel_id, float *__restrict__ out_depth,
+    float *__restrict__ out_raydirs, const scalar_t *__restrict__ in_voxel,
     const RVIP_Params p) {
 
   int img_coords[2];
@@ -119,7 +132,7 @@ static __global__ void ray_voxel_intersection_perspective_kernel(
        cur_plane++) { // Last cycle is for calculating p2
     float t = nanf("0");
     float t2 = nanf("0");
-    int32_t blk_id = 0;
+    scalar_t blk_id = 0;
     // Find the next intersection
     while (!quit) {
       // Find the next smallest t
@@ -211,9 +224,11 @@ static __global__ void ray_voxel_intersection_perspective_kernel(
       }
 
       // Test intersection using voxel grid
-      blk_id = in_voxel[axis_int[0] * p.voxel_strides[0] +
-                        axis_int[1] * p.voxel_strides[1] +
-                        axis_int[2] * p.voxel_strides[2]];
+      int64_t blk_idx =
+          static_cast<int64_t>(axis_int[0]) * p.voxel_strides[0] +
+          static_cast<int64_t>(axis_int[1]) * p.voxel_strides[1] +
+          static_cast<int64_t>(axis_int[2]) * p.voxel_strides[2];
+      blk_id = in_voxel[blk_idx];
       if (blk_id == 0) {
         continue;
       }
@@ -248,17 +263,23 @@ static __global__ void ray_voxel_intersection_perspective_kernel(
   } // cur_plane
 }
 
+// clang-format off
 /*
     out:
-        out_voxel_id: torch CUDA int32  [   img_dims[0], img_dims[1],
-   max_samples, 1] out_depth:    torch CUDA float  [2, img_dims[0], img_dims[1],
-   max_samples, 1] out_raydirs:  torch CUDA float  [   img_dims[0], img_dims[1],
-   1, 3] in: in_voxel:     torch CUDA int32  [X, Y, Z] [40, 512, 512] cam_ori:
-   torch      float  [3] cam_dir:      torch      float  [3] cam_up:       torch
-   float  [3] cam_f:                   float cam_c:                   int    [2]
+        out_voxel_id: torch CUDA int32  [   img_dims[0], img_dims[1], max_samples, 1] 
+        out_depth:    torch CUDA float  [2, img_dims[0], img_dims[1], max_samples, 1] 
+        out_raydirs:  torch CUDA float  [   img_dims[0], img_dims[1], 1, 3] 
+    in: 
+        in_voxel:     torch CUDA int32  [X, Y, Z] [40, 512, 512] 
+        cam_ori:      torch      float  [3] 
+        cam_dir:      torch      float  [3] 
+        cam_up:       torch      float  [3] 
+        cam_f:                   float 
+        cam_c:                   int    [2]
         img_dims:                int    [2]
         max_samples:             int
 */
+// clang-format on
 std::vector<torch::Tensor> ray_voxel_intersection_perspective_cuda(
     const torch::Tensor &in_voxel, const torch::Tensor &cam_ori,
     const torch::Tensor &cam_dir, const torch::Tensor &cam_up, float cam_f,
@@ -272,7 +293,7 @@ std::vector<torch::Tensor> ray_voxel_intersection_perspective_cuda(
   torch::Device device = in_voxel.device();
 
   // assert(in_voxel.dtype() == torch::kU8);
-  assert(in_voxel.dtype() == torch::kInt32); // Minecraft compatibility
+  // assert(in_voxel.dtype() == torch::kInt32);
   assert(in_voxel.dim() == 3);
   assert(cam_ori.dtype() == torch::kFloat32);
   assert(cam_ori.numel() == 3);
@@ -296,7 +317,6 @@ std::vector<torch::Tensor> ray_voxel_intersection_perspective_cuda(
   cross<float>(p.cam_up, p.cam_side, p.cam_fwd);
   normalize<float, 3>(p.cam_up); // Not absolutely necessary as both vectors are
                                  // normalized. But just in case...
-
   copyarr<float, 3>(p.cam_ori, cam_ori_c.data_ptr<float>());
 
   p.cam_f = cam_f;
@@ -320,9 +340,9 @@ std::vector<torch::Tensor> ray_voxel_intersection_perspective_cuda(
 
   // Create output tensors
   // For Minecraft Seg Mask
-  torch::Tensor out_voxel_id =
-      torch::empty({p.img_dims[0], p.img_dims[1], p.max_samples, 1},
-                   torch::TensorOptions().dtype(torch::kInt32).device(device));
+  torch::Tensor out_voxel_id = torch::empty(
+      {p.img_dims[0], p.img_dims[1], p.max_samples, 1},
+      torch::TensorOptions().dtype(in_voxel.dtype()).device(device));
 
   torch::Tensor out_depth;
   // Produce two sets of localcoords, one for entry point, the other one for
@@ -337,15 +357,17 @@ std::vector<torch::Tensor> ray_voxel_intersection_perspective_cuda(
                                                .device(device)
                                                .requires_grad(false));
 
-  const int TILE_DIM = 8;
   dim3 dimGrid((p.img_dims[1] + TILE_DIM - 1) / TILE_DIM,
                (p.img_dims[0] + TILE_DIM - 1) / TILE_DIM, 1);
   dim3 dimBlock(TILE_DIM, TILE_DIM, 1);
 
-  ray_voxel_intersection_perspective_kernel<TILE_DIM>
-      <<<dimGrid, dimBlock, 0, stream>>>(
-          out_voxel_id.data_ptr<int32_t>(), out_depth.data_ptr<float>(),
-          out_raydirs.data_ptr<float>(), in_voxel.data_ptr<int32_t>(), p);
+  AT_DISPATCH_INTEGRAL_TYPES(
+      in_voxel.scalar_type(), "ray_voxel_intersection_perspective_cuda", ([&] {
+        ray_voxel_intersection_perspective_kernel<<<dimGrid, dimBlock, 0,
+                                                    stream>>>(
+            out_voxel_id.data_ptr<scalar_t>(), out_depth.data_ptr<float>(),
+            out_raydirs.data_ptr<float>(), in_voxel.data_ptr<scalar_t>(), p);
+      }));
 
   return {out_voxel_id, out_depth, out_raydirs};
 }
