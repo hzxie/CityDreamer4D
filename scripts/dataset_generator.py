@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-12 16:36:11
+# @Last Modified at: 2024-08-13 09:22:28
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -37,11 +37,8 @@ import utils.helpers
 
 def get_cfg_value(key):
     CONSTANTS = {
-        # "IMAGE_HEIGHT": 540,
-        # "IMAGE_WIDTH": 960,
-        # "BLDG_ROOF_HEIGHT": 1,
-        # "N_VOXEL_SAMPLES": 6,
-        # "N_VIEWPOINTS": 24,
+        "IMAGE_HEIGHT": 540,
+        "IMAGE_WIDTH": 960,
     }
 
     if key in CONSTANTS:
@@ -259,21 +256,36 @@ def get_bev_map_bbox(cam_pose, patch_size, scale=1):
     assert scale == 1, "Not implemented for scale != 1"
     scaled_patch_size = int(patch_size / scale)
     half_s_patch_size = scaled_patch_size // 2
-    # Determine the patch center
-    delta = cam_pose["cam_position"][:2] - cam_pose["cam_look_at"][:2]
-    if (np.abs(delta) <= half_s_patch_size).any():
-        top_left = cam_pose["cam_look_at"][:2] - half_s_patch_size
-    else:
-        # Camera is too far away from the patch center, crop from the camera center
-        new_cam_look_at = (
-            cam_pose["cam_position"][:2] - np.sign(delta) * half_s_patch_size
-        )
-        top_left = new_cam_look_at - half_s_patch_size
 
+    delta = cam_pose["cam_look_at"][:2] - cam_pose["cam_position"][:2]
+    if (np.abs(delta) <= half_s_patch_size).all():
+        patch_center = _get_max_square_center(
+            cam_pose["cam_look_at"][:2], delta, half_s_patch_size
+        )
+    else:
+        # Camera is too far away from the look_at point, crop from the camera center
+        patch_center = _get_max_square_center(
+            cam_pose["cam_position"][:2], delta, half_s_patch_size
+        )
     # Ordered by: (x, y)
-    top_left = (top_left + 0.5).astype(np.int32)
-    btm_right = top_left + scaled_patch_size
+    patch_center = (patch_center + 0.5).astype(np.int32)
+    top_left = patch_center - half_s_patch_size
+    btm_right = patch_center + half_s_patch_size
     return {"TL": top_left, "BR": btm_right}
+
+
+def _get_max_square_center(viewpoint, delta, half_size):
+    dx_scale = half_size / np.abs(delta[0])
+    dy_scale = half_size / np.abs(delta[1])
+    # Use the smaller scale
+    if dx_scale < dy_scale:
+        cx = viewpoint[0] + np.sign(delta[0]) * half_size
+        cy = viewpoint[1] + delta[1] * dx_scale
+    else:
+        cy = viewpoint[1] + np.sign(delta[1]) * half_size
+        cx = viewpoint[0] + delta[0] * dy_scale
+
+    return np.array([cx, cy])
 
 
 def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
@@ -294,7 +306,7 @@ def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
             projections[k], bev_map_bbox, vol_size, volume.device
         )
         # TODO: Uncomment
-        # assert torch.min(_projections["TD_HF"]) >= 0
+        assert torch.min(_projections["TD_HF"]) >= 0
         assert torch.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
 
         volume = fe(
@@ -367,7 +379,8 @@ def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes):
         N_MAX_SAMPLES,
     )
     # Bug Fix: Map NULL voxels to SKY
-    voxel_id[voxel_id == 0] = classes["SKY"]
+    # TODO: Uncomment
+    # voxel_id[voxel_id == 0] = classes["SKY"]
 
     return {
         "voxel_id": voxel_id,
@@ -447,7 +460,17 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
         os.makedirs(raycasting_dir, exist_ok=True)
         with open(os.path.join(data_dir, city, "CameraRig.json")) as fp:
             cam_rig = json.load(fp)
-            # TODO: Scale the image size
+            cam_rig = cam_rig["cameras"]["CameraComponent"]
+            cam_rig["sensor_size"] = [
+                get_cfg_value("IMAGE_WIDTH"),
+                get_cfg_value("IMAGE_HEIGHT"),
+            ]
+            # Principal point
+            cam_rig["intrinsics"][2] = cam_rig["sensor_size"][0] / 2
+            cam_rig["intrinsics"][5] = cam_rig["sensor_size"][1] / 2
+            # Focal length
+            cam_rig["intrinsics"][0] /= 1920 / get_cfg_value("IMAGE_WIDTH")
+            cam_rig["intrinsics"][4] /= 1080 / get_cfg_value("IMAGE_HEIGHT")
 
         rows = []
         with open(os.path.join(data_dir, city, "CameraPoses.csv")) as fp:
@@ -479,7 +502,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 get_cfg_value("VOL_SIZE"),
             )
             raycasting = get_ray_voxel_intersection(
-                cam_rig["cameras"]["CameraComponent"],
+                cam_rig,
                 cam_pose,
                 volume,
                 get_cfg_value("CLASSES"),
@@ -510,6 +533,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                         raycasting["voxel_id"], est_seg_map
                     )
                     pickle.dump(raycasting, ofp)
+
             # Empty CUDA cache
             del volume
             del raycasting
