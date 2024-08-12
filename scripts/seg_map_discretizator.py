@@ -89,7 +89,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--work_dir", default=os.path.join(PROJECT_HOME, "data", "city-sample", "City01")
+        "--work_dir",
+        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City01"),
     )
     parser.add_argument("--input_dir", default="SemanticImage")
     parser.add_argument("--output_dir", default="SemanticImage")
