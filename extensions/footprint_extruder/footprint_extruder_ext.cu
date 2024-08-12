@@ -3,7 +3,7 @@
  * @Author: Haozhe Xie
  * @Date:   2023-03-26 11:06:18
  * @Last Modified by: Haozhe Xie
- * @Last Modified at: 2024-08-08 18:45:43
+ * @Last Modified at: 2024-08-12 16:17:03
  * @Email:  root@haozhexie.com
  */
 
@@ -28,8 +28,8 @@ __global__ void extrude_footprint_ext_cuda_kernel(
     short hgt_up = hf_td[j * width + i];
     short hgt_lw = hf_bu[j * width + i];
     scalar_t inst = bev_ins_map[j * width + i];
-    int64_t vol_offset = i * width * depth + j * depth;
-    for (int k = hgt_lw; k < hgt_up; ++k) {
+    int64_t vol_offset = j * width * depth + i * depth;
+    for (int k = hgt_lw; k <= hgt_up; ++k) {
       volume[vol_offset + k] = inst;
       if (inst >= bldg_inst_min && inst < bldg_inst_max) {
         if (k >= hgt_lw && k < l1_height) {
