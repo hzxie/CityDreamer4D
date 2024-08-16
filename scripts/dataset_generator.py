@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-13 09:22:28
+# @Last Modified at: 2024-08-16 20:20:27
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -12,7 +12,6 @@ import cv2
 import csv
 import json
 import logging
-import logging.config
 import numpy as np
 import os
 import pickle
@@ -211,15 +210,16 @@ def _get_water_areas(projection, classes):
     return projection
 
 
-def get_instance_bboxes(seg_map, inst_range):
-    building_instances = [
-        i for i in np.unique(seg_map) if i >= inst_range[0] and i < inst_range[1]
-    ]
+def get_instance_bboxes(projections, inst_range):
     bboxes = {}
-    for bi in tqdm(
-        building_instances, desc="Generating Building Bounding Boxes", leave=False
-    ):
-        bboxes[bi] = cv2.boundingRect((seg_map == bi).astype(np.uint8))
+    for k, v in projections.items():
+        _instances = [
+            i for i in np.unique(v["INS_BEV"]) if i >= inst_range[0] and i < inst_range[1]
+        ]
+        for bi in tqdm(
+            _instances, desc="Generating Instance BBoxes[%s]" % k, leave=False
+        ):
+            bboxes[bi] = cv2.boundingRect((v["INS_BEV"] == bi).astype(np.uint8))
 
     return bboxes
 
@@ -248,44 +248,55 @@ def get_camera_poses(cam_pose, half_map_size, scale, depth_offset):
 
 def _get_look_at_position(cam_position, cam_quaternion):
     mat3 = scipy.spatial.transform.Rotation.from_quat(cam_quaternion).as_matrix()
-    step = cam_position[-1] / mat3[:3, 0][-1]  # Make z=0 for the look-at position
-    return cam_position - step * mat3[:3, 0]
+    return cam_position + mat3[:3, 0]
 
 
-def get_bev_map_bbox(cam_pose, patch_size, scale=1):
-    assert scale == 1, "Not implemented for scale != 1"
-    scaled_patch_size = int(patch_size / scale)
-    half_s_patch_size = scaled_patch_size // 2
+def get_bev_map_bbox(projection, cam_rig, cam_pose, inst_bboxes, patch_size, bldg_cfg):
+    fe = extensions.footprint_extruder.FootprintExtruder(
+        roof_height=bldg_cfg["ROOF_HEIGHT"],
+        roof_id_offset=bldg_cfg["ROOF_OFFSET"],
+        bldg_inst_range=bldg_cfg["INST_RANGE"],
+    )
+    # Scale the projection maps to the patch size
+    scaled_projection = _get_projection_patch(projection, patch_size)
+    scale_factor = patch_size / projection["INS_BEV"].shape[0]
+    # Adjust the camera position and look-at position
+    _cam_pose = {
+        "cam_position": cam_pose["cam_position"] * scale_factor,
+        "cam_look_at": cam_pose["cam_look_at"] * scale_factor,
+    }
 
-    delta = cam_pose["cam_look_at"][:2] - cam_pose["cam_position"][:2]
-    if (np.abs(delta) <= half_s_patch_size).all():
-        patch_center = _get_max_square_center(
-            cam_pose["cam_look_at"][:2], delta, half_s_patch_size
-        )
+    volume = torch.zeros(
+        (patch_size, patch_size, int(bldg_cfg["MAX_HEIGHT"] * scale_factor) + 1),
+        dtype=torch.int16,
+        device=torch.device("cuda:0"),
+    )
+    volume = fe(
+        volume,
+        scaled_projection["INS_BEV"],
+        scaled_projection["TD_HF"],
+        scaled_projection["BU_HF"],
+    )
+    raycasting = get_ray_voxel_intersection(cam_rig, _cam_pose, volume)
+    voxels = raycasting["voxel_id"][:, :, 0, 0]
+    bldg_voxels = voxels[voxels >= bldg_cfg["INST_RANGE"][0]]
+    if bldg_voxels.size(0) != 0:
+        n_ins_pixels = torch.bincount(bldg_voxels)
+        major_inst = torch.argmax(n_ins_pixels).item()
+        # Convert Bldg.Roof -> Bldg.Facade
+        if major_inst not in inst_bboxes:
+            major_inst -= 1
+        x, y, w, h = inst_bboxes[major_inst]
+        patch_center = np.array([x + w / 2, y + h / 2], dtype=np.float32)
     else:
-        # Camera is too far away from the look_at point, crop from the camera center
-        patch_center = _get_max_square_center(
-            cam_pose["cam_position"][:2], delta, half_s_patch_size
-        )
+        logging.warning("No building voxels found in the raycasting results.")
+        patch_center = cam_pose["cam_look_at"][:2]
+
     # Ordered by: (x, y)
     patch_center = (patch_center + 0.5).astype(np.int32)
-    top_left = patch_center - half_s_patch_size
-    btm_right = patch_center + half_s_patch_size
+    top_left = patch_center - patch_size // 2
+    btm_right = patch_center + patch_size // 2
     return {"TL": top_left, "BR": btm_right}
-
-
-def _get_max_square_center(viewpoint, delta, half_size):
-    dx_scale = half_size / np.abs(delta[0])
-    dy_scale = half_size / np.abs(delta[1])
-    # Use the smaller scale
-    if dx_scale < dy_scale:
-        cx = viewpoint[0] + np.sign(delta[0]) * half_size
-        cy = viewpoint[1] + delta[1] * dx_scale
-    else:
-        cy = viewpoint[1] + np.sign(delta[1]) * half_size
-        cx = viewpoint[0] + delta[0] * dy_scale
-
-    return np.array([cx, cy])
 
 
 def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
@@ -299,11 +310,11 @@ def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
     volume = torch.zeros(
         (vol_size, vol_size, bldg_cfg["MAX_HEIGHT"]),
         dtype=torch.int16,
-        device="cuda:0",
+        device=torch.device("cuda:0"),
     )
     for k in ["CAR", "FREEWAY", "REST"]:
         _projections = _get_projection_patch(
-            projections[k], bev_map_bbox, vol_size, volume.device
+            projections[k], vol_size, bev_map_bbox, volume.device
         )
         # TODO: Uncomment
         assert torch.min(_projections["TD_HF"]) >= 0
@@ -315,11 +326,10 @@ def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
             _projections["TD_HF"],
             _projections["BU_HF"],
         )
-
     return volume.squeeze(dim=0)
 
 
-def _get_projection_patch(projections, bev_map_bbox, patch_size, device):
+def _get_projection_patch(projections, patch_size, bev_map_bbox=None, device="cuda:0"):
     INTERPOLATION = {
         "INS_BEV": cv2.INTER_NEAREST,
         "TD_HF": cv2.INTER_LINEAR,
@@ -328,10 +338,22 @@ def _get_projection_patch(projections, bev_map_bbox, patch_size, device):
     # Crop to patches
     patches = {}
     for k, v in INTERPOLATION.items():
-        tl, br = bev_map_bbox["TL"], bev_map_bbox["BR"]
+        if bev_map_bbox is not None:
+            tl, br = bev_map_bbox["TL"], bev_map_bbox["BR"]
+        else:
+            tl = [0, 0]
+            br = [projections[k].shape[1], projections[k].shape[0]]
+
         _patch = projections[k][tl[1] : br[1], tl[0] : br[0]].astype(np.int16)
+        _scale = 1
         if _patch.shape != (patch_size, patch_size):
+            _scale = (
+                (patch_size / _patch.shape[0]) + (patch_size / _patch.shape[1])
+            ) / 2
             _patch = cv2.resize(_patch, (patch_size, patch_size), interpolation=v)
+        # Auto scale the height maps
+        if k == "TD_HF" or k == "BU_HF":
+            _patch = (_patch * _scale).astype(np.int16)
 
         patches[k] = utils.helpers.var_or_cuda(
             torch.from_numpy(_patch),
@@ -341,7 +363,7 @@ def _get_projection_patch(projections, bev_map_bbox, patch_size, device):
     return patches
 
 
-def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes):
+def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes=None):
     N_MAX_SAMPLES = 6
     cam_origin = torch.tensor(
         [
@@ -415,7 +437,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
         city_dir = os.path.join(data_dir, city)
         proj_dir = os.path.join(city_dir, "Projections")
         if not os.path.exists(proj_dir):
-            logging.info("Generating Projections for %s" % city)
+            logging.info("Generating Projections for %s ..." % city)
             projections = get_projections(
                 city_dir,
                 get_cfg_value("BEV_MAP_SIZE"),
@@ -432,7 +454,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                         os.path.join(proj_dir, "%s_%s.png" % (k, mk))
                     )
         else:
-            logging.info("Reading projections for %s" % city)
+            logging.info("Reading projections for %s ..." % city)
             projections = {}
             for k in ["CAR", "FREEWAY", "REST"]:
                 projections[k] = {
@@ -444,16 +466,18 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
 
         # Generate footprint bounding boxes
         inst_bbox_file_path = os.path.join(data_dir, city, "Footprints.pkl")
-        # TODO: Uncomment
-        # if not os.path.exists(inst_bbox_file_path):
-        #     inst_bboxes = get_instance_bboxes(
-        #         seg_map.cpu().numpy(),
-        #         [INST_RANGES["BLDG"][0], INST_RANGES["CAR"][1]],
-        #     )
-        #     with open(inst_bbox_file_path, "wb") as fp:
-        #         pickle.dump(inst_bboxes, fp)
-        # else:
-        #     logging.warning("File[Name=%s] exists. Skipping." % inst_bbox_file_path)
+        logging.info("Generating footprint bounding boxes for %s ..." % city)
+        if not os.path.exists(inst_bbox_file_path):
+            inst_bboxes = get_instance_bboxes(
+                projections,
+                [INST_RANGES["BLDG"][0], INST_RANGES["CAR"][1]],
+            )
+            with open(inst_bbox_file_path, "wb") as fp:
+                pickle.dump(inst_bboxes, fp)
+        else:
+            logging.warning("File[Name=%s] exists. Skipping." % inst_bbox_file_path)
+            with open(inst_bbox_file_path, "rb") as fp:
+                inst_bboxes = pickle.load(fp)
 
         # Generate raycasting results
         raycasting_dir = os.path.join(data_dir, city, "Raycasting")
@@ -477,6 +501,12 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
             reader = csv.DictReader(fp)
             rows = [r for r in reader]
 
+        bldg_cfg = {
+            "INST_RANGE": INST_RANGES["BLDG"],
+            "ROOF_HEIGHT": get_cfg_value("BLDG_ROOF_HEIGHT"),
+            "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET"),
+            "MAX_HEIGHT": get_cfg_value("MAX_HEIGHT"),
+        }
         for r in tqdm(rows):
             cam_pose = get_camera_poses(
                 r,
@@ -484,22 +514,21 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 get_cfg_value("SCALE"),
                 get_cfg_value("Z_OFFSET"),
             )
-            bev_map_bbox = get_bev_map_bbox(cam_pose, get_cfg_value("VOL_SIZE"))
+            bev_map_bbox = get_bev_map_bbox(
+                projections["REST"],
+                cam_rig,
+                cam_pose,
+                inst_bboxes,
+                get_cfg_value("VOL_SIZE"),
+                bldg_cfg,
+            )
             # Update cam_pose according to the bev_map_bbox
             cam_pose["cam_position"][:2] -= bev_map_bbox["TL"]
             cam_pose["cam_look_at"][:2] -= bev_map_bbox["TL"]
             # Rebuild 3D volume from projection maps
             # TODO: Try to use different scales for different classes
             volume = get_volume_with_scale(
-                projections,
-                bev_map_bbox,
-                {
-                    "INST_RANGE": INST_RANGES["BLDG"],
-                    "ROOF_HEIGHT": get_cfg_value("BLDG_ROOF_HEIGHT"),
-                    "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET"),
-                    "MAX_HEIGHT": get_cfg_value("MAX_HEIGHT"),
-                },
-                get_cfg_value("VOL_SIZE"),
+                projections, bev_map_bbox, bldg_cfg, get_cfg_value("VOL_SIZE")
             )
             raycasting = get_ray_voxel_intersection(
                 cam_rig,
@@ -541,13 +570,9 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
 
 
 if __name__ == "__main__":
-    logging.config.dictConfig(
-        {
-            "disable_existing_loggers": True,
-            "format": "[%(levelname)s] %(asctime)s %(message)s",
-            "level": logging.DEBUG,
-            "version": 1,
-        }
+    logging.basicConfig(
+        format="[%(levelname)s] %(asctime)s %(message)s",
+        level=logging.INFO,
     )
     parser = argparse.ArgumentParser(description="The CitySample Dataset Generator")
     parser.add_argument(
