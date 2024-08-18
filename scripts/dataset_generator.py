@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-16 20:20:27
+# @Last Modified at: 2024-08-18 13:42:30
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -55,10 +55,10 @@ def _get_dataset_cfg_value(key):
         "CAR_INST_RANGE": "CAR.INS_RANGE",
     }
     CFG_VALUES = {
-        "SCALE": 5,
-        "Z_OFFSET": 17.5,  # 17.5 = -3.5m * scale -> 0 for the water plane
+        "SCALE": 4,
+        "Z_OFFSET": 14,  # 14 = -3.5m * scale -> 0 for the water plane
         "VOL_SIZE": 3072,
-        "BEV_MAP_SIZE": 24576,
+        "BEV_MAP_SIZE": 19600,
         "BLDG_ROOF_HEIGHT": 1,
         "BLDG_ROOF_OFFSET": 1,
     }
@@ -93,7 +93,9 @@ def _get_dataset_cfg_value(key):
         return None
 
 
-def get_projections(city_dir, map_size, z_offset, classes, inst_ranges):
+def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
+    HOU_SCALE = 5
+    scale_factor = scale / HOU_SCALE
     # The constants defined in HOU_CLASSES only used in this function.
     HOU_CLASSES = {
         "ROAD": 1,
@@ -108,14 +110,14 @@ def get_projections(city_dir, map_size, z_offset, classes, inst_ranges):
     }
     HOU_INV_INDEX = {v: k for k, v in HOU_CLASSES.items()}
     HOU_SCALES = {
-        "ROAD": 10,
-        "FWY_DECK": 10,
-        "FWY_PILLAR": 5,
-        "FWY_BARRIER": 8,
-        "CAR": 2,
-        "WATER": 50,
-        "ZONE": 10,
-        "BLDG_FACADE": 5,
+        "ROAD": int(10 * scale_factor),
+        "FWY_DECK": int(10 * scale_factor),
+        "FWY_PILLAR": int(5 * scale_factor),
+        "FWY_BARRIER": int(8 * scale_factor),
+        "CAR": int(2 * scale_factor + 0.5),
+        "WATER": int(50 * scale_factor),
+        "ZONE": int(10 * scale_factor),
+        "BLDG_FACADE": int(10 * scale_factor),
     }
 
     points_file_path = os.path.join(city_dir, "Points.pkl")
@@ -125,6 +127,8 @@ def get_projections(city_dir, map_size, z_offset, classes, inst_ranges):
 
     with open(points_file_path, "rb") as fp:
         points = pickle.load(fp)
+    # Scale the point coordinates by scale_factor
+    points[:, :3] = (points[:, :3] * scale_factor + 0.5).astype(np.int16)
     # Make all the point coordinates positive at z-axis
     points[:, 2] += z_offset
 
@@ -153,6 +157,7 @@ def get_projections(city_dir, map_size, z_offset, classes, inst_ranges):
             points[rest_rows], map_size, HOU_INV_INDEX, classes, HOU_SCALES, inst_ranges
         ),
     }
+    # projections["REST"] = _fill_projection_holes(projections["REST"])
     projections["REST"] = _get_water_areas(projections["REST"], classes)
     return projections
 
@@ -214,7 +219,9 @@ def get_instance_bboxes(projections, inst_range):
     bboxes = {}
     for k, v in projections.items():
         _instances = [
-            i for i in np.unique(v["INS_BEV"]) if i >= inst_range[0] and i < inst_range[1]
+            i
+            for i in np.unique(v["INS_BEV"])
+            if i >= inst_range[0] and i < inst_range[1]
         ]
         for bi in tqdm(
             _instances, desc="Generating Instance BBoxes[%s]" % k, leave=False
@@ -306,7 +313,6 @@ def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
         bldg_inst_range=bldg_cfg["INST_RANGE"],
     )
 
-    # TODO: Consider separating the volume into different classes (especially cars)
     volume = torch.zeros(
         (vol_size, vol_size, bldg_cfg["MAX_HEIGHT"]),
         dtype=torch.int16,
@@ -316,7 +322,6 @@ def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
         _projections = _get_projection_patch(
             projections[k], vol_size, bev_map_bbox, volume.device
         )
-        # TODO: Uncomment
         assert torch.min(_projections["TD_HF"]) >= 0
         assert torch.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
 
@@ -401,8 +406,8 @@ def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes=None):
         N_MAX_SAMPLES,
     )
     # Bug Fix: Map NULL voxels to SKY
-    # TODO: Uncomment
-    # voxel_id[voxel_id == 0] = classes["SKY"]
+    if classes is not None:
+        voxel_id[voxel_id == 0] = classes["SKY"]
 
     return {
         "voxel_id": voxel_id,
@@ -413,18 +418,19 @@ def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes=None):
     }
 
 
-# def get_ambiguous_seg_mask(voxel_id, est_seg_map):
-#     ins_seg_map = voxel_id.squeeze()[..., 0].copy()
-#     # NOTE: In ins_seg_map, 4n and 4n+1 denote building facade and roof, respectively.
-#     #       In est_seg_map, 7 and 8 denote building facade and roof, respectively.
-#     ins_seg_map[ins_seg_map >= CONSTANTS["CAR_INS_MIN_ID"]] = CONSTANTS["CAR_CLS_ID"]
-#     ins_seg_map[
-#         (ins_seg_map >= CONSTANTS["BLD_INS_MIN_ID"]) & (ins_seg_map % 4 == 0)
-#     ] = CONSTANTS["BLD_FACADE_CLS_ID"]
-#     ins_seg_map[
-#         (ins_seg_map >= CONSTANTS["BLD_INS_MIN_ID"]) & (ins_seg_map % 4 == 1)
-#     ] = CONSTANTS["BLD_ROOF_CLS_ID"]
-#     return ins_seg_map == np.array(est_seg_map.convert("P"))
+def get_unambiguous_seg_mask(
+    ins_seg_map, est_seg_map, bldg_inst_range, car_inst_range, classes
+):
+    # NOTE: In ins_seg_map, 4n and 4n+1 denote building facade and roof, respectively.
+    #       In est_seg_map, 7 and 8 denote building facade and roof, respectively.
+    ins_seg_map[ins_seg_map >= car_inst_range[0]] = classes["CAR"]
+    ins_seg_map[(ins_seg_map >= bldg_inst_range[0]) & (ins_seg_map % 4 == 0)] = classes[
+        "BLDG_FACADE"
+    ]
+    ins_seg_map[(ins_seg_map >= bldg_inst_range[0]) & (ins_seg_map % 4 == 1)] = classes[
+        "BLDG_ROOF"
+    ]
+    return ins_seg_map == est_seg_map
 
 
 def main(data_dir, seg_map_file_pattern, img_size, is_debug):
@@ -442,6 +448,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 city_dir,
                 get_cfg_value("BEV_MAP_SIZE"),
                 get_cfg_value("Z_OFFSET"),
+                get_cfg_value("SCALE"),
                 get_cfg_value("CLASSES"),
                 INST_RANGES,
             )
@@ -526,7 +533,6 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
             cam_pose["cam_position"][:2] -= bev_map_bbox["TL"]
             cam_pose["cam_look_at"][:2] -= bev_map_bbox["TL"]
             # Rebuild 3D volume from projection maps
-            # TODO: Try to use different scales for different classes
             volume = get_volume_with_scale(
                 projections, bev_map_bbox, bldg_cfg, get_cfg_value("VOL_SIZE")
             )
@@ -552,14 +558,23 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                         data_dir, city, seg_map_file_pattern % (city, int(r["id"]))
                     )
                 )
+                est_seg_map = cv2.resize(
+                    np.array(est_seg_map.convert("P")),
+                    (get_cfg_value("IMAGE_WIDTH"), get_cfg_value("IMAGE_HEIGHT")),
+                    interpolation=cv2.INTER_NEAREST,
+                )
                 # Change the order of channels for efficiency
                 raycasting["depth2"] = raycasting["depth2"].permute(1, 2, 0, 3, 4)
                 raycasting = {k: v.cpu().numpy() for k, v in raycasting.items()}
                 with open(
                     os.path.join(raycasting_dir, "%04d.pkl" % int(r["id"])), "wb"
                 ) as ofp:
-                    raycasting["mask"] = get_ambiguous_seg_mask(
-                        raycasting["voxel_id"], est_seg_map
+                    raycasting["mask"] = get_unambiguous_seg_mask(
+                        raycasting["voxel_id"][:, :, 0, 0],
+                        est_seg_map,
+                        get_cfg_value("BLDG_INST_RANGE"),
+                        get_cfg_value("CAR_INST_RANGE"),
+                        get_cfg_value("CLASSES"),
                     )
                     pickle.dump(raycasting, ofp)
 

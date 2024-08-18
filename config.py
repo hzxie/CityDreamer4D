@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-12 16:38:56
+# @Last Modified at: 2024-08-18 12:57:33
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -37,7 +37,7 @@ cfg.DATASETS.CITY_SAMPLE                         = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.DIR                     = "./data/city-sample"
 cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "ftp_stats"]
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
-cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2176
+cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2560
 cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5
 cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
