@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-18 12:57:33
+# @Last Modified at: 2024-08-19 11:01:32
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -21,6 +21,7 @@ cfg.DATASETS.GOOGLE_EARTH                        = EasyDict()
 cfg.DATASETS.GOOGLE_EARTH.FTG_DIR                = "./data/google-earth"
 cfg.DATASETS.GOOGLE_EARTH.OSM_DIR                = "./data/osm"
 cfg.DATASETS.GOOGLE_EARTH.PIN_MEMORY             = ["td_hf", "seg_lyt", "ftp_stats"]
+cfg.DATASETS.GOOGLE_EARTH.IMAGE_SIZE             = (960, 540)
 cfg.DATASETS.GOOGLE_EARTH.N_REPEAT               = 1
 cfg.DATASETS.GOOGLE_EARTH.MAX_HEIGHT             = 640
 cfg.DATASETS.GOOGLE_EARTH.N_VIEWS                = 60
@@ -35,16 +36,17 @@ cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE          = 672
 cfg.DATASETS.GOOGLE_EARTH.BLDG.INS_RANGE         = [10, 65536]
 cfg.DATASETS.CITY_SAMPLE                         = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.DIR                     = "./data/city-sample"
-cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["hf", "seg", "ftp_stats"]
+cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["td_hf", "seg_lyt", "ftp_stats"]
+cfg.DATASETS.CITY_SAMPLE.IMAGE_SIZE              = (960, 540)
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
 cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2560
-cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5
-cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000
+cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5        # 10
+cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000     # 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
 cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"ROAD": 1, "CAR": 3, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
 cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
 cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
-cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]
+cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]  # ["Day", "Night"]
 cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 1536
 cfg.DATASETS.CITY_SAMPLE.BLDG                    = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.BLDG.VOL_SIZE           = 672

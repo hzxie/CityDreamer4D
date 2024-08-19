@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 09:41:21
+# @Last Modified at: 2024-08-19 10:11:01
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -554,6 +554,11 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 with open(
                     os.path.join(raycasting_dir, "%04d.pkl" % int(r["id"])), "wb"
                 ) as ofp:
+                    bev_map_center = (bev_map_bbox["BR"] + bev_map_bbox["TL"]) / 2 + 0.5
+                    raycasting["img_center"] = {
+                        "cx": int(bev_map_center[0]),
+                        "cy": int(bev_map_center[1]),
+                    }
                     raycasting["mask"] = get_unambiguous_seg_mask(
                         raycasting["voxel_id"][:, :, 0, 0],
                         est_seg_map,

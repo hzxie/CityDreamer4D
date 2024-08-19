@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 13:50:54
+# @Last Modified at: 2024-08-19 10:40:35
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -26,6 +26,8 @@ def get_dataset(cfg, dataset_name, split):
         return CitySampleDataset(cfg, split)
     elif dataset_name == "CITY_SAMPLE_BLDG":
         return CitySampleBuildingDataset(cfg, split)
+    elif dataset_name == "CITY_SAMPLE_CAR":
+        raise NotImplementedError
     else:
         raise Exception("Unknown dataset: %s" % dataset_name)
 
@@ -110,7 +112,7 @@ class CityDataset(torch.utils.data.Dataset):
         if file_path in self.memcached:
             return self.memcached[file_path]
 
-        return np.array(utils.io.IO.get(file_path).convert("P"))
+        return np.array(utils.io.IO.get(file_path))
 
     def _get_ftp_stats(self, file_path):
         if file_path in self.memcached:
@@ -137,10 +139,18 @@ class CityDataset(torch.utils.data.Dataset):
                     self.memcached[v] = self._get_ftp_stats(v)
 
     def _get_transformations(
-        self, cfg, bev_crop_size, img_crop_size, instances=None, semantic_classes={}
+        self, cfg, bev_crop_size, img_size, img_crop_size, instances=None, semantic_classes={}
     ):
         # The transformation libraries can be reused in different datasets
         return {
+            "Resize": {
+                "callback": "Resize",
+                "parameters": {
+                    "height": img_size[1],
+                    "width": img_size[0],
+                },
+                "objects": ["footage"],
+            },
             "BevCrop": {
                 "callback": "BevCrop",
                 "parameters": {
@@ -206,7 +216,6 @@ class CityDataset(torch.utils.data.Dataset):
                 "callback": "InstanceToSemantic",
                 "parameters": {
                     "semantic_classes": semantic_classes,
-                    "min_instances": cfg.MIN_INSTANCE,
                 },
                 "objects": ["voxel_id", "seg_lyt"],
             },
@@ -255,6 +264,7 @@ class GoogleEarthDataset(CityDataset):
             self._get_transformations(
                 dt_cfg,
                 bev_crop_size=dt_cfg.VOL_SIZE,
+                img_size=dt_cfg.IMAGE_SIZE,
                 img_crop_size=(
                     cfg.TRAIN.GANCRAFT.CROP_SIZE
                     if split == "train"
@@ -339,6 +349,7 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
                     "cnt_inst": [-1],
                 },
                 bev_crop_size=dt_cfg.BLDG.VOL_SIZE,
+                img_size=dt_cfg.IMAGE_SIZE,
                 img_crop_size=(
                     cfg.TRAIN.GANCRAFT.CROP_SIZE
                     if split == "train"
@@ -374,6 +385,12 @@ class CitySampleDataset(CityDataset):
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 },
             },
+            "CAR": {
+                "smtc": 0,
+                "cond": {
+                    "range": (dt_cfg.CAR.INS_RANGE[0], dt_cfg.CAR.INS_RANGE[1]),
+                },
+            },
         }
         self.renderings = self._get_renderings(dt_cfg, split)
         self.n_renderings = len(self.renderings)
@@ -382,11 +399,13 @@ class CitySampleDataset(CityDataset):
             self._get_transformations(
                 dt_cfg,
                 bev_crop_size=dt_cfg.VOL_SIZE,
+                img_size=dt_cfg.IMAGE_SIZE,
                 img_crop_size=(
                     cfg.TRAIN.GANCRAFT.CROP_SIZE
                     if split == "train"
                     else cfg.TEST.GANCRAFT.CROP_SIZE
                 ),
+                semantic_classes=self.semantic_classes,
             ),
         )
 
@@ -395,8 +414,8 @@ class CitySampleDataset(CityDataset):
         files = [
             {
                 "name": "%s/%s/%04d" % (c, s, i),
-                "td_hf": os.path.join(cfg.DIR, c, "HeightField.png"),
-                "seg_lyt": os.path.join(cfg.DIR, c, "SegLayout.png"),
+                "td_hf": os.path.join(cfg.DIR, c, "Projections", "REST_TD_HF.png"),
+                "seg_lyt": os.path.join(cfg.DIR, c, "Projections", "REST_INS_BEV.png"),
                 "footage": os.path.join(
                     cfg.DIR,
                     c,
@@ -420,6 +439,7 @@ class CitySampleDataset(CityDataset):
         return utils.transforms.Compose(
             [
                 tr["BevCrop"],
+                tr["Resize"],
                 tr["RandomCrop" if split == "train" else "CenterCrop"],
                 tr["InstanceToSemantic"],
                 tr["ToOneHot"],
@@ -448,6 +468,12 @@ class CitySampleBuildingDataset(CitySampleDataset):
                     "cond": lambda x: x % 4 == 1,
                 },
             },
+            "CAR": {
+                "smtc": 0,
+                "cond": {
+                    "range": (dt_cfg.CAR.INS_RANGE[0], dt_cfg.CAR.INS_RANGE[1]),
+                },
+            },
         }
         self.transforms = self._get_data_transform(
             split,
@@ -460,11 +486,13 @@ class CitySampleBuildingDataset(CitySampleDataset):
                     "cnt_inst": [1],
                 },
                 bev_crop_size=dt_cfg.BLDG.VOL_SIZE,
+                img_size=dt_cfg.IMAGE_SIZE,
                 img_crop_size=(
                     cfg.TRAIN.GANCRAFT.CROP_SIZE
                     if split == "train"
                     else cfg.TEST.GANCRAFT.CROP_SIZE
                 ),
+                semantic_classes=self.semantic_classes,
             ),
         )
 
@@ -472,6 +500,7 @@ class CitySampleBuildingDataset(CitySampleDataset):
         return utils.transforms.Compose(
             [
                 tr["RandomInstances"],
+                tr["Resize"],
                 tr["BevCrop"],
                 tr["MaskRaydirs"],
                 tr["InstanceCrop"],

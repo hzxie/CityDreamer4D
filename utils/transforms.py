@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 13:41:33
+# @Last Modified at: 2024-08-19 10:42:01
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -82,6 +82,22 @@ class RandomInstances(object):
 
         ins_mask = np.isin(ins_map, data["inst"])
         data["mask"] &= ins_mask
+        return data
+
+
+class Resize(object):
+    def __init__(self, parameters, objects):
+        self.height = parameters["height"]
+        self.width = parameters["width"]
+        self.objects = objects
+
+    def _get_resized_img(self, img, width, height):
+        return cv2.resize(img, (width, height))
+
+    def __call__(self, data):
+        for k in self.objects:
+            data[k] = self._get_resized_img(data[k], self.width, self.height)
+
         return data
 
 
@@ -219,7 +235,6 @@ class BevCrop(object):
 class InstanceToSemantic(object):
     def __init__(self, parameters, objects):
         self.semantic_classes = parameters["semantic_classes"]
-        self.min_instances = parameters["min_instances"]
         self.objects = objects
 
     def _instances_to_semantic(self, ins_map, mapper):
