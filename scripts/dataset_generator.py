@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-18 13:42:30
+# @Last Modified at: 2024-08-19 09:41:21
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -35,18 +35,6 @@ import utils.helpers
 
 
 def get_cfg_value(key):
-    CONSTANTS = {
-        "IMAGE_HEIGHT": 540,
-        "IMAGE_WIDTH": 960,
-    }
-
-    if key in CONSTANTS:
-        return CONSTANTS[key]
-    else:
-        return _get_dataset_cfg_value(key)
-
-
-def _get_dataset_cfg_value(key):
     from config import cfg
 
     CFG_KEYS = {
@@ -165,7 +153,7 @@ def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
 def _get_projection(points, map_size, hou_inv_idx, classes, scales, inst_ranges):
     # assert points.dtype == np.int16
     ins_map = np.zeros((map_size, map_size), dtype=points.dtype)
-    tpd_hf = -1 * np.ones((map_size, map_size), dtype=points.dtype)
+    tpd_hf = np.zeros((map_size, map_size), dtype=points.dtype)
     btu_hf = np.iinfo(points.dtype).max * np.ones(
         (map_size, map_size), dtype=points.dtype
     )
@@ -492,16 +480,13 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
         with open(os.path.join(data_dir, city, "CameraRig.json")) as fp:
             cam_rig = json.load(fp)
             cam_rig = cam_rig["cameras"]["CameraComponent"]
-            cam_rig["sensor_size"] = [
-                get_cfg_value("IMAGE_WIDTH"),
-                get_cfg_value("IMAGE_HEIGHT"),
-            ]
+            cam_rig["sensor_size"] = img_size
             # Principal point
             cam_rig["intrinsics"][2] = cam_rig["sensor_size"][0] / 2
             cam_rig["intrinsics"][5] = cam_rig["sensor_size"][1] / 2
             # Focal length
-            cam_rig["intrinsics"][0] /= 1920 / get_cfg_value("IMAGE_WIDTH")
-            cam_rig["intrinsics"][4] /= 1080 / get_cfg_value("IMAGE_HEIGHT")
+            cam_rig["intrinsics"][0] /= 1920 / img_size[0]
+            cam_rig["intrinsics"][4] /= 1080 / img_size[1]
 
         rows = []
         with open(os.path.join(data_dir, city, "CameraPoses.csv")) as fp:
@@ -560,7 +545,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 )
                 est_seg_map = cv2.resize(
                     np.array(est_seg_map.convert("P")),
-                    (get_cfg_value("IMAGE_WIDTH"), get_cfg_value("IMAGE_HEIGHT")),
+                    (img_size[0], img_size[1]),
                     interpolation=cv2.INTER_NEAREST,
                 )
                 # Change the order of channels for efficiency
