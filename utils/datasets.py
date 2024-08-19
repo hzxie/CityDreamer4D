@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 11:30:43
+# @Last Modified at: 2024-08-19 15:33:14
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -261,7 +261,6 @@ class GoogleEarthDataset(CityDataset):
                 "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
                 "cond": {
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
-                    "cond": lambda x: x % 2 == 0,
                 },
             },
         }
@@ -281,7 +280,7 @@ class GoogleEarthDataset(CityDataset):
         )
 
     def _get_renderings(self, cfg, split):
-        trajectories = sorted(os.listdir(cfg.FTG_DIR))[:10]
+        trajectories = sorted(os.listdir(cfg.FTG_DIR))
         files = [
             {
                 "name": "%s/%02d" % (t, i),
