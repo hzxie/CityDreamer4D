@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 11:01:32
+# @Last Modified at: 2024-08-19 11:37:40
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -40,14 +40,14 @@ cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["td_hf", "seg_lyt", "ftp_sta
 cfg.DATASETS.CITY_SAMPLE.IMAGE_SIZE              = (960, 540)
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
 cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2560
-cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5        # 10
-cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000     # 3000
+cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 1        # 10
+cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 100      # 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
 cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"ROAD": 1, "CAR": 3, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
 cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
 cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
 cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]  # ["Day", "Night"]
-cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 1536
+cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 3072
 cfg.DATASETS.CITY_SAMPLE.BLDG                    = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.BLDG.VOL_SIZE           = 672
 cfg.DATASETS.CITY_SAMPLE.BLDG.INS_RANGE          = [100, 5000]
@@ -129,9 +129,6 @@ cfg.TRAIN.GANCRAFT                               = EasyDict()
 cfg.TRAIN.GANCRAFT.N_EPOCHS                      = 500
 cfg.TRAIN.GANCRAFT.CKPT_SAVE_FREQ                = 25
 cfg.TRAIN.GANCRAFT.BATCH_SIZE                    = 1
-cfg.TRAIN.GANCRAFT.LR_GENERATOR                  = 1e-4
-cfg.TRAIN.GANCRAFT.LR_DISCRIMINATOR              = 1e-5
-cfg.TRAIN.GANCRAFT.DISCRIMINATOR_N_WARMUP_ITERS  = 100000
 cfg.TRAIN.GANCRAFT.EPS                           = 1e-7
 cfg.TRAIN.GANCRAFT.WEIGHT_DECAY                  = 0
 cfg.TRAIN.GANCRAFT.BETAS                         = (0., 0.999)
@@ -145,6 +142,12 @@ cfg.TRAIN.GANCRAFT.GAN_LOSS_FACTOR               = 0.5
 cfg.TRAIN.GANCRAFT.EMA_ENABLED                   = False
 cfg.TRAIN.GANCRAFT.EMA_RAMPUP                    = 0.05
 cfg.TRAIN.GANCRAFT.EMA_N_RAMPUP_ITERS            = 10000
+cfg.TRAIN.GANCRAFT.GENERATOR                     = EasyDict()
+cfg.TRAIN.GANCRAFT.GENERATOR.LR                  = 1e-4
+cfg.TRAIN.GANCRAFT.DISCRIMINATOR                 = EasyDict()
+cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED         = False
+cfg.TRAIN.GANCRAFT.DISCRIMINATOR.LR              = 1e-5
+cfg.TRAIN.GANCRAFT.DISCRIMINATOR.N_WARMUP_ITERS  = 100000
 
 #
 # Test

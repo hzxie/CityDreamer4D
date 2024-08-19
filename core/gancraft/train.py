@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 13:40:42
+# @Last Modified at: 2024-08-19 11:42:44
 # @Email:  root@haozhexie.com
 
 import copy
@@ -47,25 +47,28 @@ def train(cfg):
         vol_size=train_dataset.get_vol_size(),
         center_offset=train_dataset.get_center_offset(),
     )
-    gancraft_d = models.gancraft.GanCraftDiscriminator(
-        cfg.NETWORK.GANCRAFT,
-        n_classes=train_dataset.get_n_classes(),
-    )
+    if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+        gancraft_d = models.gancraft.GanCraftDiscriminator(
+            cfg.NETWORK.GANCRAFT,
+            n_classes=train_dataset.get_n_classes(),
+        )
     if torch.cuda.is_available():
         logging.info("Start running the DDP on rank %d." % local_rank)
         gancraft_g = torch.nn.parallel.DistributedDataParallel(
             gancraft_g.to(local_rank),
             device_ids=[local_rank],
         )
-        gancraft_d = torch.nn.parallel.DistributedDataParallel(
-            gancraft_d.to(local_rank),
-            device_ids=[local_rank],
-        )
+        if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+            gancraft_d = torch.nn.parallel.DistributedDataParallel(
+                gancraft_d.to(local_rank),
+                device_ids=[local_rank],
+            )
         if cfg.TRAIN.GANCRAFT.EMA_ENABLED:
             gancraft_g_ema = copy.deepcopy(gancraft_g).requires_grad_(False).eval()
     else:
         gancraft_g.device = torch.device("cpu")
-        gancraft_d.device = torch.device("cpu")
+        if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+            gancraft_d.device = torch.device("cpu")
 
     # Set up data loaders
     train_sampler = None
@@ -100,18 +103,19 @@ def train(cfg):
     # Set up optimizers
     optimizer_g = torch.optim.Adam(
         filter(lambda p: p.requires_grad, gancraft_g.parameters()),
-        lr=cfg.TRAIN.GANCRAFT.LR_GENERATOR,
+        lr=cfg.TRAIN.GANCRAFT.GENERATOR.LR,
         eps=cfg.TRAIN.GANCRAFT.EPS,
         weight_decay=cfg.TRAIN.GANCRAFT.WEIGHT_DECAY,
         betas=cfg.TRAIN.GANCRAFT.BETAS,
     )
-    optimizer_d = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, gancraft_d.parameters()),
-        lr=cfg.TRAIN.GANCRAFT.LR_DISCRIMINATOR,
-        eps=cfg.TRAIN.GANCRAFT.EPS,
-        weight_decay=cfg.TRAIN.GANCRAFT.WEIGHT_DECAY,
-        betas=cfg.TRAIN.GANCRAFT.BETAS,
-    )
+    if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+        optimizer_d = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, gancraft_d.parameters()),
+            lr=cfg.TRAIN.GANCRAFT.DISCRIMINATOR.LR,
+            eps=cfg.TRAIN.GANCRAFT.EPS,
+            weight_decay=cfg.TRAIN.GANCRAFT.WEIGHT_DECAY,
+            betas=cfg.TRAIN.GANCRAFT.BETAS,
+        )
 
     # Set up loss functions
     l1_loss = torch.nn.L1Loss()
@@ -129,7 +133,8 @@ def train(cfg):
         logging.info("Recovering from %s ..." % (cfg.CONST.CKPT))
         checkpoint = torch.load(cfg.CONST.CKPT, map_location=gancraft_g.device)
         gancraft_g.load_state_dict(checkpoint["gancraft_g"])
-        gancraft_d.load_state_dict(checkpoint["gancraft_d"])
+        if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+            gancraft_d.load_state_dict(checkpoint["gancraft_d"])
         if cfg.TRAIN.GANCRAFT.EMA_ENABLED:
             gancraft_g_ema.load_state_dict(checkpoint["gancraft_g_ema"])
         init_epoch = checkpoint["epoch_index"]
@@ -167,20 +172,22 @@ def train(cfg):
 
         # Switch models to train mode
         gancraft_g.train()
-        gancraft_d.train()
+        if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+            gancraft_d.train()
         batch_end_time = time()
         for batch_idx, data in enumerate(train_data_loader):
             n_itr = (epoch_idx - 1) * n_batches + batch_idx
             data_time.update(time() - batch_end_time)
             # Warm up the discriminator
-            if n_itr <= cfg.TRAIN.GANCRAFT.DISCRIMINATOR_N_WARMUP_ITERS:
-                lr = (
-                    cfg.TRAIN.GANCRAFT.LR_DISCRIMINATOR
-                    * n_itr
-                    / cfg.TRAIN.GANCRAFT.DISCRIMINATOR_N_WARMUP_ITERS
-                )
-                for pg in optimizer_d.param_groups:
-                    pg["lr"] = lr
+            if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+                if n_itr <= cfg.TRAIN.GANCRAFT.DISCRIMINATOR.N_WARMUP_ITERS:
+                    lr = (
+                        cfg.TRAIN.GANCRAFT.DISCRIMINATOR.LR
+                        * n_itr
+                        / cfg.TRAIN.GANCRAFT.DISCRIMINATOR.N_WARMUP_ITERS
+                    )
+                    for pg in optimizer_d.param_groups:
+                        pg["lr"] = lr
 
             hf_seg = utils.helpers.var_or_cuda(
                 torch.cat([data["td_hf"], data["seg_lyt"]], dim=1), gancraft_g.device
@@ -200,40 +207,56 @@ def train(cfg):
             ftp_stats = None if "ftp_stats" not in data else data["ftp_stats"]
 
             # Discriminator Update Step
-            utils.helpers.requires_grad(gancraft_g, False)
-            utils.helpers.requires_grad(gancraft_d, True)
+            if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+                utils.helpers.requires_grad(gancraft_g, False)
+                utils.helpers.requires_grad(gancraft_d, True)
 
-            with torch.no_grad():
-                fake_imgs = gancraft_g(
-                    hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
+                with torch.no_grad():
+                    fake_imgs = gancraft_g(
+                        hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
+                    )
+                    fake_imgs = fake_imgs.detach()
+
+                fake_labels = gancraft_d(fake_imgs, seg_maps, masks)
+                real_labels = gancraft_d(footages, seg_maps, masks)
+
+                gan_loss_weights = None
+                # BLDG Mode
+                # gan_loss_weights = F.interpolate(masks, scale_factor=0.25)
+
+                fake_loss = gan_loss(
+                    fake_labels, False, gan_loss_weights, dis_update=True
                 )
-                fake_imgs = fake_imgs.detach()
-
-            fake_labels = gancraft_d(fake_imgs, seg_maps, masks)
-            real_labels = gancraft_d(footages, seg_maps, masks)
-
-            gan_loss_weights = None
-            # BLDG Mode
-            # gan_loss_weights = F.interpolate(masks, scale_factor=0.25)
-
-            fake_loss = gan_loss(fake_labels, False, gan_loss_weights, dis_update=True)
-            real_loss = gan_loss(real_labels, True, gan_loss_weights, dis_update=True)
-            loss_d = fake_loss + real_loss
-            gancraft_d.zero_grad()
-            loss_d.backward()
-            optimizer_d.step()
+                real_loss = gan_loss(
+                    real_labels, True, gan_loss_weights, dis_update=True
+                )
+                loss_d = fake_loss + real_loss
+                gancraft_d.zero_grad()
+                loss_d.backward()
+                optimizer_d.step()
+            else:
+                fake_loss = torch.tensor(0)
+                real_loss = torch.tensor(0)
+                loss_d = torch.tensor(0)
 
             # Generator Update Step
-            utils.helpers.requires_grad(gancraft_d, False)
-            utils.helpers.requires_grad(gancraft_g, True)
+            if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+                utils.helpers.requires_grad(gancraft_d, False)
+                utils.helpers.requires_grad(gancraft_g, True)
 
             fake_imgs = gancraft_g(
                 hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
             )
-            fake_labels = gancraft_d(fake_imgs, seg_maps, masks)
             _l1_loss = l1_loss(fake_imgs * masks, footages * masks)
             _perceptual_loss = perceptual_loss(fake_imgs * masks, footages * masks)
-            _gan_loss = gan_loss(fake_labels, True, gan_loss_weights, dis_update=False)
+            if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+                fake_labels = gancraft_d(fake_imgs, seg_maps, masks)
+                _gan_loss = gan_loss(
+                    fake_labels, True, gan_loss_weights, dis_update=False
+                )
+            else:
+                _gan_loss = torch.tensor(0)
+
             loss_g = (
                 _l1_loss * cfg.TRAIN.GANCRAFT.REC_LOSS_FACTOR
                 + _perceptual_loss * cfg.TRAIN.GANCRAFT.PERCEPTUAL_LOSS_FACTOR
@@ -342,8 +365,9 @@ def train(cfg):
                 "cfg": cfg,
                 "epoch_index": epoch_idx,
                 "gancraft_g": gancraft_g.state_dict(),
-                "gancraft_d": gancraft_d.state_dict(),
             }
+            if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
+                ckpt["gancraft_d"] = gancraft_d.state_dict()
             if cfg.TRAIN.GANCRAFT.EMA_ENABLED:
                 ckpt["gancraft_g_ema"] = gancraft_g_ema.state_dict()
 

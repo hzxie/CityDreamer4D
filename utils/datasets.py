@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 10:40:35
+# @Last Modified at: 2024-08-19 11:30:43
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -139,7 +139,13 @@ class CityDataset(torch.utils.data.Dataset):
                     self.memcached[v] = self._get_ftp_stats(v)
 
     def _get_transformations(
-        self, cfg, bev_crop_size, img_size, img_crop_size, instances=None, semantic_classes={}
+        self,
+        cfg,
+        bev_crop_size,
+        img_size,
+        img_crop_size,
+        instances=None,
+        semantic_classes={},
     ):
         # The transformation libraries can be reused in different datasets
         return {
@@ -433,7 +439,15 @@ class CitySampleDataset(CityDataset):
         if cfg.PIN_MEMORY:
             self._pin_memory(cfg, files)
 
-        return files if split == "train" else files[-32:]
+        return (
+            files
+            if split == "train"
+            else (
+                files
+                if split == "train"
+                else [f for i, f in enumerate(files) if i % 500 == 0]
+            )
+        )
 
     def _get_data_transform(self, split, tr):
         return utils.transforms.Compose(
