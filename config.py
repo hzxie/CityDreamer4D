@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 11:37:40
+# @Last Modified at: 2024-08-21 18:40:56
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -31,6 +31,7 @@ cfg.DATASETS.GOOGLE_EARTH.N_MIN_PIXELS           = 64
 cfg.DATASETS.GOOGLE_EARTH.MIN_INSTANCE           = 10
 cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE               = 1536
 cfg.DATASETS.GOOGLE_EARTH.BLDG                   = EasyDict()
+cfg.DATASETS.GOOGLE_EARTH.BLDG.INDEX_FILE        = "./data/google-earth-bldg.json"
 cfg.DATASETS.GOOGLE_EARTH.BLDG.N_CLASSES         = 8
 cfg.DATASETS.GOOGLE_EARTH.BLDG.VOL_SIZE          = 672
 cfg.DATASETS.GOOGLE_EARTH.BLDG.INS_RANGE         = [10, 65536]
@@ -49,9 +50,11 @@ cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
 cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]  # ["Day", "Night"]
 cfg.DATASETS.CITY_SAMPLE.VOL_SIZE                = 3072
 cfg.DATASETS.CITY_SAMPLE.BLDG                    = EasyDict()
+cfg.DATASETS.CITY_SAMPLE.BLDG.INDEX_FILE         = "./data/city-sample-bldg.json"
 cfg.DATASETS.CITY_SAMPLE.BLDG.VOL_SIZE           = 672
 cfg.DATASETS.CITY_SAMPLE.BLDG.INS_RANGE          = [100, 5000]
 cfg.DATASETS.CITY_SAMPLE.CAR                     = EasyDict()
+cfg.DATASETS.CITY_SAMPLE.BLDG.INDEX_FILE         = "./data/city-sample-car.json"
 cfg.DATASETS.CITY_SAMPLE.CAR.VOL_SIZE            = 0
 cfg.DATASETS.CITY_SAMPLE.CAR.INS_RANGE           = [5000, 16384]
 
@@ -145,7 +148,7 @@ cfg.TRAIN.GANCRAFT.EMA_N_RAMPUP_ITERS            = 10000
 cfg.TRAIN.GANCRAFT.GENERATOR                     = EasyDict()
 cfg.TRAIN.GANCRAFT.GENERATOR.LR                  = 1e-4
 cfg.TRAIN.GANCRAFT.DISCRIMINATOR                 = EasyDict()
-cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED         = False
+cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED         = True
 cfg.TRAIN.GANCRAFT.DISCRIMINATOR.LR              = 1e-5
 cfg.TRAIN.GANCRAFT.DISCRIMINATOR.N_WARMUP_ITERS  = 100000
 

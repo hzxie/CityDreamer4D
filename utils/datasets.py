@@ -4,9 +4,10 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 15:33:14
+# @Last Modified at: 2024-08-21 18:44:02
 # @Email:  root@haozhexie.com
 
+import json
 import numpy as np
 import os
 import torch
@@ -60,6 +61,27 @@ class CityDataset(torch.utils.data.Dataset):
         self.n_renderings = 0
         self.transforms = None
 
+    @staticmethod
+    def get_instance_renderings(renderings, inst_range=None, index_file=None):
+        instance_renderings = []
+        if os.path.exists(index_file):
+            with open(index_file) as fp:
+                instance_renderings = json.load(fp)
+        else:
+            for r in tqdm(renderings, desc="Checking visible instances ..."):
+                data = utils.io.IO.get(r["raycasting"])
+                ins_map = data["voxel_id"][..., 0, 0] * data["mask"]
+                visible_ins = np.unique(
+                    ins_map[np.isin(ins_map, [i for i in range(*inst_range)])]
+                )
+                if len(visible_ins) > 0:
+                    instance_renderings.append(r)
+
+            with open(index_file, "w") as fp:
+                json.dump(instance_renderings, fp, indent=2)
+
+        return instance_renderings
+
     def get_n_classes(self, layout=False):
         if self.inst is None:
             return self.cfg.N_CLASSES
@@ -92,6 +114,7 @@ class CityDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         rendering = self.renderings[idx % self.n_renderings]
         data = utils.io.IO.get(rendering["raycasting"])
+
         # print(data.keys())    # dict_keys(['voxel_id', 'depth2', 'raydirs', 'cam_origin', 'img_center', 'mask'])
         data["td_hf"] = self._get_height_field(rendering["td_hf"], self.cfg)
         data["seg_lyt"] = self._get_seg_layout(rendering["seg_lyt"])
@@ -254,11 +277,11 @@ class GoogleEarthDataset(CityDataset):
         dt_cfg = cfg.DATASETS.GOOGLE_EARTH
         super(GoogleEarthDataset, self).__init__(dt_cfg, split, inst)
 
-        self.renderings = self._get_renderings(dt_cfg, split)
+        self.renderings = self._get_renderings(dt_cfg, split, inst)
         self.n_renderings = len(self.renderings)
         self.semantic_classes = {
             "BLDG_FACADE": {
-                "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
+                "smtc": 0,
                 "cond": {
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 },
@@ -279,7 +302,7 @@ class GoogleEarthDataset(CityDataset):
             ),
         )
 
-    def _get_renderings(self, cfg, split):
+    def _get_renderings(self, cfg, split, inst):
         trajectories = sorted(os.listdir(cfg.FTG_DIR))
         files = [
             {
@@ -303,6 +326,10 @@ class GoogleEarthDataset(CityDataset):
         ]
         if cfg.PIN_MEMORY:
             self._pin_memory(cfg, files)
+        if inst is not None:
+            files = CityDataset.get_instance_renderings(
+                self.renderings, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
+            )
 
         return files if split == "train" else files[-32:]
 
@@ -381,11 +408,11 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
 class CitySampleDataset(CityDataset):
     def __init__(self, cfg, split, inst=None):
         super(CitySampleDataset, self).__init__(cfg.DATASETS.CITY_SAMPLE, split, inst)
-        dt_cfg = cfg.DATASETS.CITY_SAMPLE
 
+        dt_cfg = cfg.DATASETS.CITY_SAMPLE
         self.semantic_classes = {
             "BLDG_FACADE": {
-                "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
+                "smtc": 0,
                 "cond": {
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 },
@@ -397,7 +424,7 @@ class CitySampleDataset(CityDataset):
                 },
             },
         }
-        self.renderings = self._get_renderings(dt_cfg, split)
+        self.renderings = self._get_renderings(dt_cfg, split, inst)
         self.n_renderings = len(self.renderings)
         self.transforms = self._get_data_transform(
             split,
@@ -414,7 +441,7 @@ class CitySampleDataset(CityDataset):
             ),
         )
 
-    def _get_renderings(self, cfg, split):
+    def _get_renderings(self, cfg, split, inst):
         cities = ["City%02d" % (i + 1) for i in range(cfg.N_CITIES)]
         files = [
             {
@@ -437,6 +464,10 @@ class CitySampleDataset(CityDataset):
         ]
         if cfg.PIN_MEMORY:
             self._pin_memory(cfg, files)
+        if inst is not None:
+            files = CityDataset.get_instance_renderings(
+                self.renderings, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
+            )
 
         return (
             files
@@ -466,6 +497,7 @@ class CitySampleBuildingDataset(CitySampleDataset):
         super(CitySampleBuildingDataset, self).__init__(cfg, split, inst="BLDG")
 
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
+        self.n_renderings = len(self.renderings)
         self.semantic_classes = {
             "BLDG_FACADE": {
                 "smtc": dt_cfg.CLASSES["BLDG_FACADE"],

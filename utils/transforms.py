@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 10:42:01
+# @Last Modified at: 2024-08-21 16:20:57
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -72,9 +72,7 @@ class RandomInstances(object):
     def __call__(self, data):
         ins_map = data["voxel_id"][..., 0, 0] * data["mask"]
         visible_ins = np.unique(ins_map[np.isin(ins_map, self.instances)])
-
-        if len(visible_ins) == 0:
-            return data
+        assert len(visible_ins) > 0, "No visible instances found."
 
         data["inst"] = [np.random.choice(visible_ins)]
         for ci in self.cont_instances:
@@ -140,7 +138,7 @@ class RandomCrop(object):
         pts = cv2.findNonZero(ins_mask.astype(np.uint8))
         x_min, x_max = np.min(pts[..., 0]), np.max(pts[..., 0])
         y_min, y_max = np.min(pts[..., 1]), np.max(pts[..., 1])
-        return (x_min, x_max), (y_min, y_max)
+        return (x_min, x_max + 1), (y_min, y_max + 1)
 
     def _get_img_patch(self, img, offset_x, offset_y):
         return img[offset_y : offset_y + self.height, offset_x : offset_x + self.width]
