@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-21 18:44:02
+# @Last Modified at: 2024-08-22 16:29:28
 # @Email:  root@haozhexie.com
 
 import json
@@ -167,6 +167,7 @@ class CityDataset(torch.utils.data.Dataset):
         bev_crop_size,
         img_size,
         img_crop_size,
+        rel_ftp_bbox=None,
         instances=None,
         semantic_classes={},
     ):
@@ -185,6 +186,7 @@ class CityDataset(torch.utils.data.Dataset):
                 "parameters": {
                     "height": bev_crop_size,
                     "width": bev_crop_size,
+                    "rel_ftp_bbox": rel_ftp_bbox,
                 },
                 # "img_center" is the center of the BEV image (compatible with CityDreamer)
                 # Additional data with keys "img_center", "ftp_stats" used in BevCrop.
@@ -328,7 +330,7 @@ class GoogleEarthDataset(CityDataset):
             self._pin_memory(cfg, files)
         if inst is not None:
             files = CityDataset.get_instance_renderings(
-                self.renderings, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
+                files, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
             )
 
         return files if split == "train" else files[-32:]
@@ -374,12 +376,6 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
             split,
             self._get_transformations(
                 dt_cfg,
-                # `instances` is used for the RandomInstances transformation
-                instances={
-                    "inst": self.semantic_classes["BLDG_FACADE"]["cond"],
-                    # NOTE: The ROOF instance is the prev. to the FACADE instance
-                    "cnt_inst": [-1],
-                },
                 bev_crop_size=dt_cfg.BLDG.VOL_SIZE,
                 img_size=dt_cfg.IMAGE_SIZE,
                 img_crop_size=(
@@ -387,6 +383,13 @@ class GoogleEarthBuildingDataset(GoogleEarthDataset):
                     if split == "train"
                     else cfg.TEST.GANCRAFT.CROP_SIZE
                 ),
+                rel_ftp_bbox=True,
+                # `instances` is used for the RandomInstances transformation
+                instances={
+                    "inst": self.semantic_classes["BLDG_FACADE"]["cond"],
+                    # NOTE: The ROOF instance is the prev. to the FACADE instance
+                    "cnt_inst": [-1],
+                },
                 semantic_classes=self.semantic_classes,
             ),
         )
@@ -466,7 +469,7 @@ class CitySampleDataset(CityDataset):
             self._pin_memory(cfg, files)
         if inst is not None:
             files = CityDataset.get_instance_renderings(
-                self.renderings, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
+                files, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
             )
 
         return (
@@ -497,7 +500,6 @@ class CitySampleBuildingDataset(CitySampleDataset):
         super(CitySampleBuildingDataset, self).__init__(cfg, split, inst="BLDG")
 
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
-        self.n_renderings = len(self.renderings)
         self.semantic_classes = {
             "BLDG_FACADE": {
                 "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
@@ -524,12 +526,6 @@ class CitySampleBuildingDataset(CitySampleDataset):
             split,
             self._get_transformations(
                 dt_cfg,
-                # `instances` is used for the RandomInstances transformation
-                instances={
-                    "inst": self.semantic_classes["BLDG_FACADE"]["cond"],
-                    # NOTE: The ROOF instance is the next to the FACADE instance
-                    "cnt_inst": [1],
-                },
                 bev_crop_size=dt_cfg.BLDG.VOL_SIZE,
                 img_size=dt_cfg.IMAGE_SIZE,
                 img_crop_size=(
@@ -537,6 +533,13 @@ class CitySampleBuildingDataset(CitySampleDataset):
                     if split == "train"
                     else cfg.TEST.GANCRAFT.CROP_SIZE
                 ),
+                rel_ftp_bbox=False,
+                # `instances` is used for the RandomInstances transformation
+                instances={
+                    "inst": self.semantic_classes["BLDG_FACADE"]["cond"],
+                    # NOTE: The ROOF instance is the next to the FACADE instance
+                    "cnt_inst": [1],
+                },
                 semantic_classes=self.semantic_classes,
             ),
         )

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-21 16:20:57
+# @Last Modified at: 2024-08-22 16:03:54
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -201,6 +201,7 @@ class BevCrop(object):
     def __init__(self, parameters, objects):
         self.height = parameters["height"]
         self.width = parameters["width"]
+        self.rel_ftp_bbox = parameters["rel_ftp_bbox"]
         self.objects = objects
 
     def _get_img_patch(self, img, cx, cy, half_width, half_height):
@@ -216,8 +217,13 @@ class BevCrop(object):
         if instance_mode:
             assert type(data["inst"]) == list
             inst = data["inst"][0]
-            # https://github.com/hzxie/city-dreamer/blob/master/utils/datasets.py?ref_type=heads#L489
+            # https://github.com/hzxie/city-dreamer/blob/master/utils/datasets.py?ref_type=heads#L494
             dx, dy, w, h = data["ftp_stats"][inst]
+            if not self.rel_ftp_bbox:
+                # https://github.com/hzxie/city-dreamer/blob/master/scripts/dataset_generator.py#L509
+                dx = dx - cx + w // 2
+                dy = dy - cy + h // 2
+
             data["ftp_stats"] = torch.Tensor([dy, dx, h, w, inst])
             cx = int(cx + data["ftp_stats"][1])
             cy = int(cy + data["ftp_stats"][0])
