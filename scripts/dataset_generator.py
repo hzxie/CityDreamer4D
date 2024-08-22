@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 10:11:01
+# @Last Modified at: 2024-08-22 09:50:11
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -560,7 +560,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                         "cy": int(bev_map_center[1]),
                     }
                     raycasting["mask"] = get_unambiguous_seg_mask(
-                        raycasting["voxel_id"][:, :, 0, 0],
+                        raycasting["voxel_id"][:, :, 0, 0].copy(),
                         est_seg_map,
                         get_cfg_value("BLDG_INST_RANGE"),
                         get_cfg_value("CAR_INST_RANGE"),
