@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-24 23:19:41
+# @Last Modified at: 2024-08-24 23:24:32
 # @Email:  root@haozhexie.com
 
 import json
@@ -334,7 +334,7 @@ class GoogleEarthDataset(CityDataset):
                 files, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
             )
 
-        return files if split == "train" else [f for f in files if f["name"].endswith("00")]
+        return files if split == "train" else [f for f in files if f["name"].endswith("00")][:32]
 
     def _get_trajectory_city(self, trajectory):
         # Trajectory name example: US-SanFrancisco-Chinatown-R624-A354

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-22 16:50:21
+# @Last Modified at: 2024-08-25 07:34:53
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -92,6 +92,7 @@ cfg.WANDB.PROJECT                                = "Moveable-Feast"
 cfg.WANDB.ENTITY                                 = "haozhexie"
 cfg.WANDB.MODE                                   = "online"
 cfg.WANDB.RUN_ID                                 = None
+cfg.WANDB.LOG_CODE                               = True
 cfg.WANDB.SYNC_TENSORBOARD                       = False
 
 #

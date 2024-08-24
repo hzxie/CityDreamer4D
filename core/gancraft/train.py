@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-24 23:16:56
+# @Last Modified at: 2024-08-25 07:33:59
 # @Email:  root@haozhexie.com
 
 import copy
@@ -148,6 +148,10 @@ def train(cfg):
         os.makedirs(cfg.DIR.CHECKPOINTS, exist_ok=True)
         # Summary writer
         tb_writer = utils.summary_writer.SummaryWriter(cfg)
+        # Log current config
+        tb_writer.add_config(cfg.NETWORK.GANCRAFT)
+        tb_writer.add_config(cfg.TRAIN.GANCRAFT)
+
 
     # Training/Testing the network
     n_batches = len(train_data_loader)
