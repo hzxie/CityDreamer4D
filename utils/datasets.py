@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-22 16:29:28
+# @Last Modified at: 2024-08-24 23:19:41
 # @Email:  root@haozhexie.com
 
 import json
@@ -248,6 +248,7 @@ class CityDataset(torch.utils.data.Dataset):
                 "parameters": {
                     "semantic_classes": semantic_classes,
                 },
+                # Additional data with keys "mask" used in InstanceToSemantic.
                 "objects": ["voxel_id", "seg_lyt"],
             },
             "ToOneHot": {
@@ -283,7 +284,7 @@ class GoogleEarthDataset(CityDataset):
         self.n_renderings = len(self.renderings)
         self.semantic_classes = {
             "BLDG_FACADE": {
-                "smtc": 0,
+                "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
                 "cond": {
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 },
@@ -333,7 +334,7 @@ class GoogleEarthDataset(CityDataset):
                 files, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
             )
 
-        return files if split == "train" else files[-32:]
+        return files if split == "train" else [f for f in files if f["name"].endswith("00")]
 
     def _get_trajectory_city(self, trajectory):
         # Trajectory name example: US-SanFrancisco-Chinatown-R624-A354
@@ -343,8 +344,8 @@ class GoogleEarthDataset(CityDataset):
         return utils.transforms.Compose(
             [
                 tr["BevCrop"],
-                tr["RandomCrop" if split == "train" else "CenterCrop"],
                 tr["InstanceToSemantic"],
+                tr["RandomCrop" if split == "train" else "CenterCrop"],
                 tr["ToOneHot"],
                 tr["ToTensor"],
             ]
@@ -415,7 +416,7 @@ class CitySampleDataset(CityDataset):
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
         self.semantic_classes = {
             "BLDG_FACADE": {
-                "smtc": 0,
+                "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
                 "cond": {
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 },
@@ -487,8 +488,8 @@ class CitySampleDataset(CityDataset):
             [
                 tr["BevCrop"],
                 tr["Resize"],
-                tr["RandomCrop" if split == "train" else "CenterCrop"],
                 tr["InstanceToSemantic"],
+                tr["RandomCrop" if split == "train" else "CenterCrop"],
                 tr["ToOneHot"],
                 tr["ToTensor"],
             ]

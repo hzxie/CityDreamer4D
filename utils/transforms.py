@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-22 16:03:54
+# @Last Modified at: 2024-08-24 22:00:34
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -280,6 +280,18 @@ class InstanceToSemantic(object):
         for k, v in data.items():
             if k in self.objects:
                 data[k] = self._instances_to_semantic(v, mapper)
+
+        # Update masks for instances
+        # In BG mode, all instances will be masked.
+        # In Instance mode, only current instance won't be masked.
+        # https://github.com/hzxie/city-dreamer/blob/master/core/gancraft/train.py#L180
+        smtc_values = [
+            sc["smtc"] for sc in self.semantic_classes.values() if sc["smtc"] != 0
+        ]
+        if instance_mode:
+            data["mask"][~np.isin(data["voxel_id"][..., 0, 0], smtc_values)] = 0
+        else:
+            data["mask"][np.isin(data["voxel_id"][..., 0, 0], smtc_values)] = 0
 
         return data
 

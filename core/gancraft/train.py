@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-19 11:42:44
+# @Last Modified at: 2024-08-24 23:16:56
 # @Email:  root@haozhexie.com
 
 import copy
@@ -221,8 +221,9 @@ def train(cfg):
                 real_labels = gancraft_d(footages, seg_maps, masks)
 
                 gan_loss_weights = None
-                # BLDG Mode
-                # gan_loss_weights = F.interpolate(masks, scale_factor=0.25)
+                if ftp_stats is not None:
+                    # Instance Mode
+                    gan_loss_weights = F.interpolate(masks, scale_factor=0.25)
 
                 fake_loss = gan_loss(
                     fake_labels, False, gan_loss_weights, dis_update=True
