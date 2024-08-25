@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2020-04-19 12:52:36
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-25 07:33:41
+# @Last Modified at: 2024-08-25 19:51:50
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -15,6 +15,7 @@ import torch.utils.tensorboard
 
 try:
     import wandb
+    wandb.require("core")
 except Exception as ex:
     logging.warning(ex)
 

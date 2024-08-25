@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-12 19:53:21
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 11:09:13
+# @Last Modified at: 2024-08-25 19:58:51
 # @Email:  root@haozhexie.com
 # @Ref: https://github.com/hzxie/CityDreamer/blob/master/models/gancraft.py
 
@@ -55,6 +55,8 @@ class GanCraftGenerator(torch.nn.Module):
 
         if self.cfg.SKY_ENABLED:
             self.sky_net = SkyMLP(cfg)
+            if self.cfg.SKY_GLOBAL_AVGPOOL:
+                self.sky_avg = None
 
     def forward(
         self,
@@ -179,16 +181,23 @@ class GanCraftGenerator(torch.nn.Module):
         # Sky dome
         sky_weight, rgbs_sky = 0, 0
         if self.cfg.SKY_ENABLED:
-            skynet_out_c, sky_avg = self.get_sky(raydirs)
-            if self.cfg.SKY_GLOBAL_AVGPOOL:
-                sky_avg = self.sky_avg
-
             non_sky_mask = torch.logical_not(sky_mask).float()
-            skynet_out_c = skynet_out_c * (1.0 - non_sky_mask) + sky_avg * (
-                non_sky_mask
-            )
-            # Sky weights and RGBs
             sky_weight = 1.0 - torch.sum(weights, dim=-2, keepdim=True)
+            skynet_out_c = self.get_sky(raydirs)
+            # https://github.com/FrozenBurning/SceneDreamer/blob/main/imaginaire/generators/scenedreamer.py#L387
+            if self.cfg.SKY_GLOBAL_AVGPOOL:
+                if self.sky_avg is not None:
+                    sky_avg = self.sky_avg
+                else:
+                    sky_avg = torch.mean(skynet_out_c, dim=[1, 2], keepdim=True)
+
+                skynet_out_c = skynet_out_c * (1.0 - non_sky_mask) + sky_avg * (
+                    non_sky_mask
+                )
+            # else:
+            #     sky_weight = sky_weight * (1.0 - non_sky_mask)
+
+            # Sky weights and RGBs
             rgbs_sky = torch.clamp(skynet_out_c, -1, 1) + 1
             # print(rgbs_sky.size())        # torch.Size([N, H, W, 1, 3])
 
@@ -213,9 +222,7 @@ class GanCraftGenerator(torch.nn.Module):
         # print(sky_raydirs_in.size())  # torch.Size([N, H, W, 1, 33])
         skynet_out_c = self.sky_net(sky_raydirs_in)
         # print(skynet_out_c.size())    # torch.Size([N, H, W, 1, 3])
-        # Avoid sky leakage
-        sky_avg = torch.mean(skynet_out_c, dim=[1, 2], keepdim=True)
-        return skynet_out_c, sky_avg
+        return skynet_out_c
 
     def _get_sampled_coordinates(
         self,
