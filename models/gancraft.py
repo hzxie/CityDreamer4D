@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-12 19:53:21
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-25 19:58:51
+# @Last Modified at: 2024-08-26 11:01:06
 # @Email:  root@haozhexie.com
 # @Ref: https://github.com/hzxie/CityDreamer/blob/master/models/gancraft.py
 
@@ -194,8 +194,8 @@ class GanCraftGenerator(torch.nn.Module):
                 skynet_out_c = skynet_out_c * (1.0 - non_sky_mask) + sky_avg * (
                     non_sky_mask
                 )
-            # else:
-            #     sky_weight = sky_weight * (1.0 - non_sky_mask)
+            else:
+                sky_weight = sky_weight * (1.0 - non_sky_mask)
 
             # Sky weights and RGBs
             rgbs_sky = torch.clamp(skynet_out_c, -1, 1) + 1

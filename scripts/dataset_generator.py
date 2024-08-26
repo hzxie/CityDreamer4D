@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-22 09:50:11
+# @Last Modified at: 2024-08-26 11:04:06
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -356,7 +356,7 @@ def _get_projection_patch(projections, patch_size, bev_map_bbox=None, device="cu
     return patches
 
 
-def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes=None):
+def get_ray_voxel_intersection(cam_rig, cam_pose, volume):
     N_MAX_SAMPLES = 6
     cam_origin = torch.tensor(
         [
@@ -393,9 +393,6 @@ def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes=None):
         [cam_rig["sensor_size"][1], cam_rig["sensor_size"][0]],
         N_MAX_SAMPLES,
     )
-    # Bug Fix: Map NULL voxels to SKY
-    if classes is not None:
-        voxel_id[voxel_id == 0] = classes["SKY"]
 
     return {
         "voxel_id": voxel_id,
@@ -409,6 +406,10 @@ def get_ray_voxel_intersection(cam_rig, cam_pose, volume, classes=None):
 def get_unambiguous_seg_mask(
     ins_seg_map, est_seg_map, bldg_inst_range, car_inst_range, classes
 ):
+    # Map NULL to WATER
+    if "SKY" in classes:
+        ins_seg_map[ins_seg_map == 0] = classes["SKY"]
+
     # NOTE: In ins_seg_map, 4n and 4n+1 denote building facade and roof, respectively.
     #       In est_seg_map, 7 and 8 denote building facade and roof, respectively.
     ins_seg_map[ins_seg_map >= car_inst_range[0]] = classes["CAR"]
@@ -521,12 +522,7 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
             volume = get_volume_with_scale(
                 projections, bev_map_bbox, bldg_cfg, get_cfg_value("VOL_SIZE")
             )
-            raycasting = get_ray_voxel_intersection(
-                cam_rig,
-                cam_pose,
-                volume,
-                get_cfg_value("CLASSES"),
-            )
+            raycasting = get_ray_voxel_intersection(cam_rig, cam_pose, volume)
             if is_debug:
                 seg_map = utils.helpers.get_seg_map(
                     raycasting["voxel_id"].squeeze()[..., 0].cpu().numpy()
