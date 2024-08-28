@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-12 19:53:21
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-26 11:01:06
+# @Last Modified at: 2024-08-28 13:56:58
 # @Email:  root@haozhexie.com
 # @Ref: https://github.com/hzxie/CityDreamer/blob/master/models/gancraft.py
 
@@ -190,6 +190,8 @@ class GanCraftGenerator(torch.nn.Module):
                     sky_avg = self.sky_avg
                 else:
                     sky_avg = torch.mean(skynet_out_c, dim=[1, 2], keepdim=True)
+                    if deterministic:
+                        self.sky_avg = sky_avg
 
                 skynet_out_c = skynet_out_c * (1.0 - non_sky_mask) + sky_avg * (
                     non_sky_mask

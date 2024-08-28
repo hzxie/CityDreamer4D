@@ -152,7 +152,6 @@ def train(cfg):
         tb_writer.add_config(cfg.NETWORK.GANCRAFT)
         tb_writer.add_config(cfg.TRAIN.GANCRAFT)
 
-
     # Training/Testing the network
     n_batches = len(train_data_loader)
     for epoch_idx in range(init_epoch + 1, cfg.TRAIN.GANCRAFT.N_EPOCHS + 1):

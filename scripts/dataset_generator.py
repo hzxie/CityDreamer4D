@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-26 11:04:06
+# @Last Modified at: 2024-08-28 15:19:41
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -508,7 +508,8 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 get_cfg_value("Z_OFFSET"),
             )
             bev_map_bbox = get_bev_map_bbox(
-                projections["REST"],
+                # City00 only has cars. The camera center should be determined by the car instances.
+                projections["CAR"] if city == "City00" else projections["REST"],
                 cam_rig,
                 cam_pose,
                 inst_bboxes,

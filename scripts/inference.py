@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 13:24:00
+# @Last Modified at: 2024-08-28 16:16:43
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -14,6 +14,7 @@ import logging
 import math
 import numpy as np
 import os
+import pickle
 import torch
 import torchvision.transforms
 import sys
@@ -44,6 +45,7 @@ def get_cfg_value(key, dataset=None):
         "BLDG_ROOF_HEIGHT": 1,
         "N_VOXEL_SAMPLES": 6,
         "N_VIEWPOINTS": 24,
+        "RAYCAST_CACHE_DIR": "/tmp/raycast",
     }
 
     if key in CONSTANTS:
@@ -66,7 +68,10 @@ def _get_dataset_cfg_value(key, dataset):
     }
     # The constants are not defined in config.py but aligned with dataset_generator.py
     CFG_VALUES = {
-        "IMAGE_VFOV": {"GOOGLE_EARTH": 10.019869883021967, "CITY_SAMPLE": None},
+        "IMAGE_VFOV": {
+            "GOOGLE_EARTH": 10.019869883021967,
+            "CITY_SAMPLE": 5.453174380627167,
+        },
         "BLDG_ROOF_OFFSET": {"GOOGLE_EARTH": -1, "CITY_SAMPLE": 1},
         "BLDG_INST_MULTIPLIER": {"GOOGLE_EARTH": 2, "CITY_SAMPLE": 4},
     }
@@ -165,6 +170,53 @@ def get_models(dataset, bg_ckpt, bldg_ckpt, car_ckpt):
     return bg_model, bldg_model, car_model
 
 
+def get_city_layout(
+    dataset,
+    dataset_dirs,
+    bldg_facade_cid,
+    bldg_inst_mult,
+    bldg_inst_range,
+    bldg_max_height,
+):
+    if dataset == "CITY_SAMPLE":
+        return get_city_sample_layout(
+            dataset_dirs["city_sample"], bldg_inst_mult, bldg_inst_range
+        )
+    elif dataset == "GOOGLE_EARTH":
+        return get_osm_city_layout(
+            dataset_dirs["osm"],
+            bldg_facade_cid,
+            bldg_inst_mult,
+            bldg_inst_range[0],
+            bldg_max_height,
+        )
+    else:
+        raise ValueError("Unknown dataset: %s" % dataset)
+
+
+def get_city_sample_layout(city_sample_dir, bldg_inst_mult, bldg_inst_range):
+    projections = {}
+    # NOTE: Static CARS are omitted in the CITY_SAMPLE dataset
+    for k in ["FREEWAY", "REST"]:
+        projections[k] = {
+            mk: np.array(
+                Image.open(
+                    os.path.join(city_sample_dir, "Projections", "%s_%s.png" % (k, mk))
+                )
+            ).astype(np.int16)
+            for mk in ["INS_BEV", "TD_HF", "BU_HF"]
+        }
+
+    with open(os.path.join(city_sample_dir, "Footprints.pkl"), "rb") as fp:
+        ftp_stats = pickle.load(fp)
+        ftp_stats = {
+            k: v
+            for k, v in ftp_stats.items()
+            if k >= bldg_inst_range[0] and k < bldg_inst_range[1]
+        }
+    return projections, ftp_stats
+
+
 def get_osm_city_layout(
     city_osm_dir, bldg_facade_cid, bldg_inst_mult, min_bldg_inst, bldg_max_height
 ):
@@ -173,9 +225,16 @@ def get_osm_city_layout(
     ins_seg, bldg_stats = _get_instance_seg_layout(
         seg, bldg_facade_cid, bldg_inst_mult, min_bldg_inst
     )
-    hf = _clip_height_field(hf, bldg_max_height)
+    hf = _clip_height_field(hf, bldg_max_height).astype(np.int16)
 
-    return hf.astype(np.int32), ins_seg.astype(np.int32), bldg_stats
+    projections = {
+        "REST": {
+            "TD_HF": hf,
+            "BU_HF": np.zeros_like(hf),
+            "INS_BEV": ins_seg.astype(np.int32),
+        }
+    }
+    return projections, bldg_stats
 
 
 def _get_instance_seg_layout(
@@ -200,7 +259,11 @@ def _get_instance_seg_layout(
     seg_layout[seg_layout == bldg_facade_cid] = 0
     seg_layout = seg_layout * (1 - building_mask) + labels * building_mask
     assert np.max(labels) < 2147483648
-    return seg_layout.astype(np.int32), stats[:, :4]
+
+    bldg_stats = {
+        (i + min_bldg_inst) * bldg_inst_mult: s[:4] for i, s in enumerate(stats)
+    }
+    return seg_layout.astype(np.int32), bldg_stats
 
 
 def _clip_height_field(hf, layout_max_height):
@@ -208,14 +271,9 @@ def _clip_height_field(hf, layout_max_height):
     return hf
 
 
-def get_latent_codes(
-    bldg_stats, bg_style_dim, bldg_inst_mult, min_bldg_inst, output_device
-):
+def get_latent_codes(bldg_stats, bg_style_dim, output_device):
     bg_z = _get_z(output_device, bg_style_dim)
-    building_zs = {
-        (i + min_bldg_inst) * bldg_inst_mult: _get_z(output_device)
-        for i in range(len(bldg_stats))
-    }
+    building_zs = {k: _get_z(output_device) for k in bldg_stats.keys()}
     return bg_z, building_zs
 
 
@@ -226,85 +284,80 @@ def _get_z(device, z_dim=256):
     return torch.randn(1, z_dim, dtype=torch.float32, device=device)
 
 
-def get_image_patch(image, cx, cy, patch_size):
+def get_image_patch(image, tl, br):
+    return image[tl[1] : br[1], tl[0] : br[0]]
+
+
+def get_bev_map_bbox(cx, cy, patch_size):
     sx = cx - patch_size // 2
     sy = cy - patch_size // 2
     ex = sx + patch_size
     ey = sy + patch_size
-    return image[sy:ey, sx:ex]
+    return {"TL": np.array([sx, sy]), "BR": np.array([ex, ey])}
 
 
-def get_part_hf_seg(hf, seg, cx, cy, patch_size):
-    part_hf = get_image_patch(hf, cx, cy, patch_size)
-    part_seg = get_image_patch(seg, cx, cy, patch_size)
-    assert part_hf.shape == (
-        patch_size,
-        patch_size,
-    ), part_hf.shape
-    assert part_hf.shape == part_seg.shape, part_seg.shape
-    return part_hf, part_seg
-
-
-def get_part_bldg_stats(part_seg, bldg_stats, cx, cy, bldg_inst_mult, min_bldg_inst):
+def get_part_bldg_stats(part_seg, bldg_stats, cx, cy, min_bldg_inst):
     _buildings = np.unique(part_seg[part_seg > min_bldg_inst])
     _bldg_stats = {}
     for b in _buildings:
-        _b = b // bldg_inst_mult - min_bldg_inst
         _bldg_stats[b] = [
-            bldg_stats[_b, 1] - cy + bldg_stats[_b, 3] / 2,
-            bldg_stats[_b, 0] - cx + bldg_stats[_b, 2] / 2,
+            bldg_stats[b][1] - cy + bldg_stats[b][3] / 2,
+            bldg_stats[b][0] - cx + bldg_stats[b][2] / 2,
         ]
     return _bldg_stats
 
 
-def get_hf_seg_tensor(
-    part_hf, part_seg, bldg_max_height, n_layout_classes, output_device
-):
+def get_hf_seg_tensor(part_hf, part_seg, n_layout_classes, bldg_cfg, output_device):
     part_hf = torch.from_numpy(part_hf[None, None, ...]).to(output_device)
+    part_hf = part_hf / bldg_cfg["MAX_HEIGHT"]
+
     part_seg = torch.from_numpy(part_seg[None, None, ...]).to(output_device)
-    part_hf = part_hf / bldg_max_height
+    part_seg[
+        (part_seg >= bldg_cfg["INST_RANGE"][0]) & (part_seg < bldg_cfg["INST_RANGE"][1])
+    ] = bldg_cfg["FACADE_CID"]
     part_seg = utils.helpers.masks_to_onehots(part_seg[:, 0, :, :], n_layout_classes)
+
     return torch.cat([part_hf, part_seg], dim=1)
 
 
-def get_seg_volume(part_hf, part_seg, vol_sizes, bldg_cfg):
-    if part_hf.shape == (vol_sizes["EXT"], vol_sizes["EXT"]):
-        part_hf = part_hf[
-            vol_sizes["BLDG"] : -vol_sizes["BLDG"],
-            vol_sizes["BLDG"] : -vol_sizes["BLDG"],
-        ]
-        part_seg = part_seg[
-            vol_sizes["BLDG"] : -vol_sizes["BLDG"],
-            vol_sizes["BLDG"] : -vol_sizes["BLDG"],
-        ]
-
-    assert part_hf.shape == (vol_sizes["LAYOUT"], vol_sizes["LAYOUT"])
-    assert part_hf.shape == part_seg.shape, part_seg.shape
+def get_seg_volume(projections, bev_map_bbox, vol_sizes, bldg_cfg):
     footprint_extruder = extensions.footprint_extruder.FootprintExtruder(
         roof_height=bldg_cfg["ROOF_HEIGHT"],
         roof_id_offset=bldg_cfg["ROOF_OFFSET"],
-        footprint_id_range=bldg_cfg["INST_RANGE"],
-        max_height=bldg_cfg["MAX_HEIGHT"],
+        bldg_inst_range=bldg_cfg["INST_RANGE"],
     )
 
-    seg_volume = footprint_extruder(
-        torch.from_numpy(part_hf[None, None, ...]).cuda(),
-        torch.from_numpy(part_seg[None, None, ...]).cuda(),
-    ).squeeze()
-    logging.debug("The shape of SegVolume: %s" % (seg_volume.size(),))
+    seg_volume = torch.zeros(
+        (vol_sizes["LAYOUT"], vol_sizes["LAYOUT"], bldg_cfg["MAX_HEIGHT"]),
+        dtype=(
+            torch.int16
+            if projections["REST"]["INS_BEV"].dtype == np.int16
+            else torch.int32
+        ),
+        device=torch.device("cuda:0"),
+    )
+    _projections = {}
+    for k in ["CAR", "FREEWAY", "REST"]:
+        if k not in projections:
+            continue
+        for mk in ["TD_HF", "BU_HF", "INS_BEV"]:
+            _projections[mk] = get_image_patch(
+                projections[k][mk],
+                bev_map_bbox["TL"] + vol_sizes["BLDG"],
+                bev_map_bbox["BR"] - vol_sizes["BLDG"],
+            )
+            assert _projections[mk].shape == (vol_sizes["LAYOUT"], vol_sizes["LAYOUT"])
 
-    # Change the top-level voxel of the "Building Facade" to "Building Roof"
-    roof_seg_map = part_seg.copy()
-    non_roof_msk = part_seg <= bldg_cfg["INST_RANGE"][0]
-    # Assume the ID of a facade instance is 2k (4k), the corresponding roof instance is 2k-1 (4k+1).
-    roof_seg_map = roof_seg_map + bldg_cfg["ROOF_OFFSET"]
-    roof_seg_map[non_roof_msk] = 0
-    for rh in range(1, bldg_cfg["ROOF_HEIGHT"] + 1):
-        seg_volume = seg_volume.scatter_(
-            dim=2,
-            index=torch.from_numpy(part_hf[..., None] + rh).long().cuda(),
-            src=torch.from_numpy(roof_seg_map[..., None]).cuda(),
+        assert np.min(_projections["TD_HF"]) >= 0
+        assert np.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
+        seg_volume = footprint_extruder(
+            seg_volume,
+            torch.from_numpy(_projections["INS_BEV"]).to(seg_volume.device),
+            torch.from_numpy(_projections["TD_HF"]).to(seg_volume.device),
+            torch.from_numpy(_projections["BU_HF"]).to(seg_volume.device),
         )
+
+    logging.debug("The shape of SegVolume: %s" % (seg_volume.size(),))
     # print(seg_volume.size())  # torch.Size([1536, 1536, 640])
     return seg_volume
 
@@ -484,7 +537,9 @@ def render_bldg(
     )
     _voxel_id[~torch.isin(_voxel_id, _curr_bldg)] = 0
     _voxel_id[voxel_id == curr_bldg_inst] = bldg_cfg["FACADE_CID"]
-    _voxel_id[voxel_id == curr_bldg_inst - 1] = bldg_cfg["ROOF_CID"]
+    _voxel_id[voxel_id == curr_bldg_inst + bldg_cfg["ROOF_OFFSET"]] = bldg_cfg[
+        "ROOF_CID"
+    ]
     # assert (_voxel_id < CONSTANTS["LAYOUT_N_CLASSES"]).all()
 
     _hf_seg = copy.deepcopy(hf_seg)
@@ -639,9 +694,12 @@ def render_static(
     return bg_img
 
 
-def get_video(frames, output_file, img_height, img_width):
+def get_video(frames, output_file, img_cfg):
     video = cv2.VideoWriter(
-        output_file, cv2.VideoWriter_fourcc(*"avc1"), 4, (img_width, img_height)
+        output_file,
+        cv2.VideoWriter_fourcc(*"avc1"),
+        4,
+        (img_cfg["WIDTH"], img_cfg["HEIGHT"]),
     )
     for f in frames:
         video.write(f)
@@ -649,37 +707,56 @@ def get_video(frames, output_file, img_height, img_width):
     video.release()
 
 
-def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output_file):
+def main(
+    patch_size,
+    dataset,
+    bg_ckpt,
+    bldg_ckpt,
+    car_ckpt,
+    dataset_dirs,
+    cache_raycast,
+    output_file,
+):
     # TODO: car_model
     logging.info("Initialize models ...")
     bg_model, bldg_model, car_model = get_models(dataset, bg_ckpt, bldg_ckpt, car_ckpt)
     # Generate height fields and seg maps
     logging.info("Generating city layouts ...")
-    hf, seg, bldg_stats = get_osm_city_layout(
-        city_osm_dir,
+    projections, bldg_stats = get_city_layout(
+        dataset,
+        dataset_dirs,
         get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
         get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
-        get_cfg_value("BLDG_INST_RANGE", dataset)[0],
+        get_cfg_value("BLDG_INST_RANGE", dataset),
         get_cfg_value("BLDG_MAX_HEIGHT", dataset),
     )
-    assert hf.shape == seg.shape
-    logging.info("City Layout Patch Size (HxW): %s" % (hf.shape,))
+    assert projections["REST"]["TD_HF"].shape == projections["REST"]["INS_BEV"].shape
+    logging.info(
+        "City Layout Patch Size (HxW): %s" % (projections["REST"]["TD_HF"].shape,)
+    )
 
     # Generate latent codes
     logging.info("Generating latent codes ...")
     bg_z, bldg_zs = get_latent_codes(
         bldg_stats,
         bg_model.module.cfg.STYLE_DIM,
-        get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
-        get_cfg_value("BLDG_INST_RANGE", dataset)[0],
         bldg_model.output_device,
     )
 
     # Simply use image center as the patch center
-    cy, cx = seg.shape[0] // 2, seg.shape[1] // 2
+    cy = projections["REST"]["TD_HF"].shape[0] // 2
+    cx = projections["REST"]["TD_HF"].shape[1] // 2
     # Generate local image patch of the height field and seg map
-    part_hf, part_seg = get_part_hf_seg(
-        hf, seg, cx, cy, get_cfg_value("VOL_SIZE/EXTEND", dataset)
+    bev_map_bbox = get_bev_map_bbox(
+        cx,
+        cy,
+        get_cfg_value("VOL_SIZE/EXTEND", dataset),
+    )
+    part_hf = get_image_patch(
+        projections["REST"]["TD_HF"], bev_map_bbox["TL"], bev_map_bbox["BR"]
+    )
+    part_seg = get_image_patch(
+        projections["REST"]["INS_BEV"], bev_map_bbox["TL"], bev_map_bbox["BR"]
     )
     # print(part_hf.shape)    # (2880, 2880)
     # print(part_seg.shape)   # (2880, 2880)
@@ -690,15 +767,18 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
         bldg_stats,
         cx,
         cy,
-        get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
         get_cfg_value("BLDG_INST_RANGE", dataset)[0],
     )
     # Generate the concatenated height field and seg. map tensor
     hf_seg = get_hf_seg_tensor(
         part_hf,
         part_seg,
-        get_cfg_value("BLDG_MAX_HEIGHT", dataset),
         get_cfg_value("N_LAYOUT_CLASSES", dataset),
+        {
+            "FACADE_CID": get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
+            "INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
+            "MAX_HEIGHT": get_cfg_value("BLDG_MAX_HEIGHT", dataset),
+        },
         bg_model.output_device,
     )
     # print(hf_seg.size())    # torch.Size([1, 8, 2880, 2880])
@@ -710,8 +790,8 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
         "EXT": get_cfg_value("VOL_SIZE/EXTEND", dataset),
     }
     seg_volume = get_seg_volume(
-        part_hf,
-        part_seg,
+        projections,
+        bev_map_bbox,
         VOL_SIZES,
         {
             "ROOF_HEIGHT": get_cfg_value("BLDG_ROOF_HEIGHT", dataset),
@@ -723,8 +803,8 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
 
     # Generate camera trajectories
     logging.info("Generating camera poses ...")
-    radius = np.random.randint(128, 512)
-    altitude = np.random.randint(256, 512)
+    radius = 2048  # np.random.randint(128, 512)
+    altitude = 128  # np.random.randint(256, 512)
     logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
     cam_pos = get_orbit_camera_positions(
         radius,
@@ -733,21 +813,52 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
         get_cfg_value("N_VIEWPOINTS", dataset),
     )
 
-    logging.info("Rendering videos ...")
     IMG_CFG = {
         "HEIGHT": get_cfg_value("IMAGE_HEIGHT", dataset),
         "WIDTH": get_cfg_value("IMAGE_WIDTH", dataset),
         "PADDING": get_cfg_value("IMAGE_PADDING", dataset),
     }
+
+    if cache_raycast:
+        logging.info("Caching raycast results ...")
+        os.makedirs(get_cfg_value("RAYCAST_CACHE_DIR"), exist_ok=True)
+        for f_idx, cp in enumerate(tqdm(cam_pos)):
+            voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
+                seg_volume,
+                cp,
+                IMG_CFG,
+                get_cfg_value("IMAGE_VFOV", dataset),
+                get_cfg_value("N_VOXEL_SAMPLES", dataset),
+            )
+            with open(
+                os.path.join(get_cfg_value("RAYCAST_CACHE_DIR"), "%04d.pkl" % f_idx),
+                "wb",
+            ) as fp:
+                pickle.dump(
+                    (voxel_id, depth2, raydirs, cam_origin),
+                    fp,
+                )
+        # Remove seg_volume to save memory
+        del voxel_id, depth2, raydirs, cam_origin, seg_volume
+
+    logging.info("Rendering videos ...")
     frames = []
-    for _, cp in enumerate(tqdm(cam_pos)):
-        voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
-            seg_volume,
-            cp,
-            IMG_CFG,
-            get_cfg_value("IMAGE_VFOV", dataset),
-            get_cfg_value("N_VOXEL_SAMPLES", dataset),
-        )
+    for f_idx, cp in enumerate(tqdm(cam_pos)):
+        if not cache_raycast:
+            voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
+                seg_volume,
+                cp,
+                IMG_CFG,
+                get_cfg_value("IMAGE_VFOV", dataset),
+                get_cfg_value("N_VOXEL_SAMPLES", dataset),
+            )
+        else:
+            with open(
+                os.path.join(get_cfg_value("RAYCAST_CACHE_DIR"), "%04d.pkl" % f_idx),
+                "rb",
+            ) as fp:
+                voxel_id, depth2, raydirs, cam_origin = pickle.load(fp)
+
         img = render_static(
             patch_size,
             hf_seg,
@@ -773,7 +884,7 @@ def main(patch_size, dataset, bg_ckpt, bldg_ckpt, car_ckpt, city_osm_dir, output
         )
         img = (utils.helpers.tensor_to_image(img, "RGB") * 255).astype(np.uint8)
         frames.append(img[..., ::-1])
-        cv2.imwrite("output/test.jpg", img[..., ::-1])
+        cv2.imwrite("output/frames/%04d.jpg" % f_idx, img[..., ::-1])
 
     get_video(frames, output_file, IMG_CFG)
 
@@ -805,6 +916,10 @@ if __name__ == "__main__":
         default=os.path.join(PROJECT_HOME, "data", "osm", "US-NewYork"),
     )
     parser.add_argument(
+        "--city_sample_dir",
+        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City01"),
+    )
+    parser.add_argument(
         "--patch_height",
         default=get_cfg_value("IMAGE_HEIGHT") // 4,
         type=int,
@@ -813,6 +928,10 @@ if __name__ == "__main__":
         "--patch_width",
         default=get_cfg_value("IMAGE_WIDTH") // 4,
         type=int,
+    )
+    parser.add_argument(
+        "--cache_raycast",
+        action="store_true",
     )
     parser.add_argument(
         "--output_file",
@@ -827,6 +946,7 @@ if __name__ == "__main__":
         args.bg_ckpt,
         args.bldg_ckpt,
         args.car_ckpt,
-        args.city_osm_dir,
+        {"osm": args.city_osm_dir, "city_sample": args.city_sample_dir},
+        args.cache_raycast,
         args.output_file,
     )
