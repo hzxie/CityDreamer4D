@@ -81,4 +81,3 @@ for frame, location, rotation, scale in keyframes:
 # Save the level sequence
 unreal.EditorAssetLibrary.save_asset(SEQ_ASSET_PATH)
 unreal.log("Keyframes added successfully!")
-

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-28 16:16:43
+# @Last Modified at: 2024-08-29 18:47:09
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -70,7 +70,7 @@ def _get_dataset_cfg_value(key, dataset):
     CFG_VALUES = {
         "IMAGE_VFOV": {
             "GOOGLE_EARTH": 10.019869883021967,
-            "CITY_SAMPLE": 5.453174380627167,
+            "CITY_SAMPLE": 10.809306586025498,
         },
         "BLDG_ROOF_OFFSET": {"GOOGLE_EARTH": -1, "CITY_SAMPLE": 1},
         "BLDG_INST_MULTIPLIER": {"GOOGLE_EARTH": 2, "CITY_SAMPLE": 4},
@@ -179,9 +179,7 @@ def get_city_layout(
     bldg_max_height,
 ):
     if dataset == "CITY_SAMPLE":
-        return get_city_sample_layout(
-            dataset_dirs["city_sample"], bldg_inst_mult, bldg_inst_range
-        )
+        return get_city_sample_layout(dataset_dirs["city_sample"], bldg_inst_range)
     elif dataset == "GOOGLE_EARTH":
         return get_osm_city_layout(
             dataset_dirs["osm"],
@@ -194,7 +192,7 @@ def get_city_layout(
         raise ValueError("Unknown dataset: %s" % dataset)
 
 
-def get_city_sample_layout(city_sample_dir, bldg_inst_mult, bldg_inst_range):
+def get_city_sample_layout(city_sample_dir, bldg_inst_range):
     projections = {}
     # NOTE: Static CARS are omitted in the CITY_SAMPLE dataset
     for k in ["FREEWAY", "REST"]:
@@ -364,6 +362,7 @@ def get_seg_volume(projections, bev_map_bbox, vol_sizes, bldg_cfg):
 
 def get_orbit_camera_positions(radius, altitude, vol_size_layout, n_viewpoints):
     # TODO: More flexible for CITY_SAMPLE
+    cam_look_at = {"x": vol_size_layout // 2 - 1, "y": vol_size_layout // 2 - 1, "z": 0}
     camera_positions = []
     cx = vol_size_layout // 2
     cy = cx
@@ -371,47 +370,48 @@ def get_orbit_camera_positions(radius, altitude, vol_size_layout, n_viewpoints):
         theta = 2 * math.pi / n_viewpoints * i
         cam_x = cx + radius * math.cos(theta)
         cam_y = cy + radius * math.sin(theta)
-        camera_positions.append({"x": cam_x, "y": cam_y, "z": altitude})
+        camera_positions.append(
+            {
+                "cam_position": {"x": cam_x, "y": cam_y, "z": altitude},
+                "cam_look_at": cam_look_at,
+            }
+        )
 
     return camera_positions
 
 
 def get_voxel_intersection_perspective(
-    seg_volume, camera_location, img_sizes, img_vfov, n_voxel_samples
+    seg_volume, cam_pose, img_sizes, img_vfov, n_voxel_samples
 ):
     CAMERA_FOCAL = img_sizes["HEIGHT"] / 2 / np.tan(np.deg2rad(img_vfov))
     # print(seg_volume.size())  # torch.Size([1536, 1536, 640])
-    camera_target = {
-        "x": seg_volume.size(1) // 2 - 1,
-        "y": seg_volume.size(0) // 2 - 1,
-    }
     cam_origin = torch.tensor(
         [
-            camera_location["y"],
-            camera_location["x"],
-            camera_location["z"],
+            cam_pose["cam_position"]["y"],
+            cam_pose["cam_position"]["x"],
+            cam_pose["cam_position"]["z"],
         ],
         dtype=torch.float32,
         device=seg_volume.device,
     )
-
+    viewdir = torch.tensor(
+        [
+            cam_pose["cam_look_at"]["y"] - cam_pose["cam_position"]["y"],
+            cam_pose["cam_look_at"]["x"] - cam_pose["cam_position"]["x"],
+            cam_pose["cam_look_at"]["z"] - cam_pose["cam_position"]["z"],
+        ],
+        dtype=torch.float32,
+        device=seg_volume.device,
+    )
     voxel_id, depth2, raydirs = extensions.voxlib.ray_voxel_intersection_perspective(
         seg_volume,
         cam_origin,
-        torch.tensor(
-            [
-                camera_target["y"] - camera_location["y"],
-                camera_target["x"] - camera_location["x"],
-                -camera_location["z"],
-            ],
-            dtype=torch.float32,
-            device=seg_volume.device,
-        ),
+        viewdir,
         torch.tensor([0, 0, 1], dtype=torch.float32),
         CAMERA_FOCAL,
         [
-            (img_sizes["HEIGHT"] - 1) / 2.0,
-            (img_sizes["WIDTH"] - 1) / 2.0,
+            img_sizes["HEIGHT"] / 2,
+            img_sizes["WIDTH"] / 2,
         ],
         [img_sizes["HEIGHT"], img_sizes["WIDTH"]],
         n_voxel_samples,
@@ -803,10 +803,10 @@ def main(
 
     # Generate camera trajectories
     logging.info("Generating camera poses ...")
-    radius = 2048  # np.random.randint(128, 512)
-    altitude = 128  # np.random.randint(256, 512)
+    radius = np.random.randint(128, 512)
+    altitude = np.random.randint(256, 512)
     logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
-    cam_pos = get_orbit_camera_positions(
+    cam_pose = get_orbit_camera_positions(
         radius,
         altitude,
         get_cfg_value("VOL_SIZE/LAYOUT", dataset),
@@ -822,7 +822,7 @@ def main(
     if cache_raycast:
         logging.info("Caching raycast results ...")
         os.makedirs(get_cfg_value("RAYCAST_CACHE_DIR"), exist_ok=True)
-        for f_idx, cp in enumerate(tqdm(cam_pos)):
+        for f_idx, cp in enumerate(tqdm(cam_pose)):
             voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
                 seg_volume,
                 cp,
@@ -838,12 +838,14 @@ def main(
                     (voxel_id, depth2, raydirs, cam_origin),
                     fp,
                 )
+
         # Remove seg_volume to save memory
         del voxel_id, depth2, raydirs, cam_origin, seg_volume
+        torch.cuda.empty_cache()
 
     logging.info("Rendering videos ...")
     frames = []
-    for f_idx, cp in enumerate(tqdm(cam_pos)):
+    for f_idx, cp in enumerate(tqdm(cam_pose)):
         if not cache_raycast:
             voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
                 seg_volume,
@@ -884,7 +886,7 @@ def main(
         )
         img = (utils.helpers.tensor_to_image(img, "RGB") * 255).astype(np.uint8)
         frames.append(img[..., ::-1])
-        cv2.imwrite("output/frames/%04d.jpg" % f_idx, img[..., ::-1])
+        # cv2.imwrite("output/frames/%04d.jpg" % f_idx, img[..., ::-1])
 
     get_video(frames, output_file, IMG_CFG)
 
