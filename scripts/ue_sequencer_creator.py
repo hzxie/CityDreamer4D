@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 #
-# @File:   create_unreal_sequencer.py
+# @File:   ue_sequencer_creator.py
 # @Author: Haozhe Xie
 # @Date:   2024-08-29 19:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-29 21:14:15
+# @Last Modified at: 2024-08-30 19:59:05
 # @Email:  root@haozhexie.com
 
 import csv
@@ -18,15 +18,15 @@ SEQ_ASSET_PATH = "/Game/Sequences/TestSequence.TestSequence"
 keyframes = []
 with open(CSV_FILE_PATH) as fp:
     reader = csv.DictReader(fp)
-    for r in reader:
+    for idx, r in enumerate(reader):
         r = {k: float(v) for k, v in r.items()}
         keyframes.append(
-            (
-                int(r["id"]),
+            [
+                idx,
                 unreal.Vector(r["tx"], r["ty"], r["tz"]),
                 unreal.Rotator(r["roll"], r["pitch"], r["yaw"]),
                 unreal.Vector(1, 1, 1),
-            )
+            ]
         )
 
 # Create a reference to the level sequence
@@ -55,11 +55,8 @@ if not sections:
 else:
     section = sections[0]
 
-# Start from -30 frames to make the initial frames stable
-keyframes.insert(0, keyframes[0])
-keyframes[0][0] = -30
-section.set_start_frame(-30)
-section.set_end_frame(keyframes[-1][0])
+section.set_start_frame(0)
+section.set_end_frame(len(keyframes))
 # Get channels in this section
 channels = section.get_all_channels()
 
@@ -70,9 +67,9 @@ for frame, location, rotation, scale in keyframes:
     channels[1].add_key(unreal.FrameNumber(frame), location.y)
     channels[2].add_key(unreal.FrameNumber(frame), location.z)
     # Add keyframes for rotation
-    channels[3].add_key(unreal.FrameNumber(frame), rotation.pitch)
-    channels[4].add_key(unreal.FrameNumber(frame), rotation.yaw)
-    channels[5].add_key(unreal.FrameNumber(frame), rotation.roll)
+    channels[3].add_key(unreal.FrameNumber(frame), rotation.roll)
+    channels[4].add_key(unreal.FrameNumber(frame), rotation.pitch)
+    channels[5].add_key(unreal.FrameNumber(frame), rotation.yaw)
     # Add keyframes for scale
     channels[6].add_key(unreal.FrameNumber(frame), scale.x)
     channels[7].add_key(unreal.FrameNumber(frame), scale.y)
