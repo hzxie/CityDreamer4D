@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-08-29 21:25:09
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-30 20:42:05
+# @Last Modified at: 2024-08-30 19:59:05
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -27,7 +27,6 @@ sys.path.append(PROJECT_HOME)
 
 import extensions.footprint_extruder
 import scripts.dataset_generator as dg
-import utils.helpers
 
 
 def get_cfg_value(key):
@@ -39,7 +38,7 @@ def get_cfg_value(key):
         "N_KEY_FRAMES": 3000,
         "N_VIEWPOINTS": 36,
         "MIN_VISIBLE_INSTANCES": 10,
-        "MIN_BLDG_PIXELS": int(960 * 540 * 0.4),
+        "MIN_BLDG_PIXELS": int(960 * 540 * 0.5),
         "PITCH_RANGE": [-75, 30],
         "IMG_SIZE": (960, 540),
         "FOCAL_LENGTH": 1414.1415820071118,
@@ -148,7 +147,7 @@ def get_keyframes(
         seg_map = raycasting["voxel_id"].squeeze()[..., 0]
         seg_map[
             (seg_map >= bldg_cfg["INST_RANGE"][0])
-            & (seg_map <= bldg_cfg["INST_RANGE"][1])
+            & (seg_map < bldg_cfg["INST_RANGE"][1])
         ] = bldg_cfg["FACADE_CID"]
         n_bldg_pixels = torch.count_nonzero(seg_map == bldg_cfg["FACADE_CID"])
         # print(i, len(instances), cam_pose, yaw)
@@ -164,8 +163,9 @@ def get_keyframes(
                     "roll": 0,
                 }
             )
-        # # Debug: Visualize the raycasting results
 
+        # # Debug: Visualize the raycasting results
+        # import utils.helpers
         # utils.helpers.get_diffuse_shading_img(
         #     seg_map,
         #     raycasting["depth2"],
@@ -255,7 +255,7 @@ def main(data_dir):
                 seg_volume,
                 get_cfg_value("N_VIEWPOINTS"),
                 get_cfg_value("MIN_VISIBLE_INSTANCES"),
-                get_cfg_value("MIN_BLDG_PIXELS") if city == "City00" else 0,
+                get_cfg_value("MIN_BLDG_PIXELS") if city != "City00" else 0,
                 get_cfg_value("PITCH_RANGE"),
                 bev_map_bbox[2],
                 {
