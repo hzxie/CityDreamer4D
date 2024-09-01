@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-25 07:34:53
+# @Last Modified at: 2024-09-01 23:42:19
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -44,7 +44,7 @@ cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2560
 cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5        # 10
 cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000     # 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
-cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"ROAD": 1, "CAR": 3, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
+cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"ROAD": 1, "FREEWAY": 2,"CAR": 3, "WATER": 4, "SKY": 5, "ZONE": 6, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
 cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
 cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
 cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]  # ["Day", "Night"]
@@ -56,7 +56,7 @@ cfg.DATASETS.CITY_SAMPLE.BLDG.VOL_SIZE           = 768
 cfg.DATASETS.CITY_SAMPLE.BLDG.INS_RANGE          = [100, 5000]
 cfg.DATASETS.CITY_SAMPLE.CAR                     = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.CAR.INDEX_FILE          = "./data/city-sample-car.json"
-cfg.DATASETS.CITY_SAMPLE.CAR.VOL_SIZE            = 0
+cfg.DATASETS.CITY_SAMPLE.CAR.VOL_SIZE            = 32
 cfg.DATASETS.CITY_SAMPLE.CAR.INS_RANGE           = [5000, 16384]
 
 #

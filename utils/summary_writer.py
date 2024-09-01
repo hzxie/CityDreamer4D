@@ -15,6 +15,7 @@ import torch.utils.tensorboard
 
 try:
     import wandb
+
     wandb.require("core")
 except Exception as ex:
     logging.warning(ex)

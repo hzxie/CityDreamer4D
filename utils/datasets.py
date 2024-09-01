@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-24 23:24:32
+# @Last Modified at: 2024-09-01 22:20:33
 # @Email:  root@haozhexie.com
 
 import json
@@ -28,7 +28,7 @@ def get_dataset(cfg, dataset_name, split):
     elif dataset_name == "CITY_SAMPLE_BLDG":
         return CitySampleBuildingDataset(cfg, split)
     elif dataset_name == "CITY_SAMPLE_CAR":
-        raise NotImplementedError
+        return CitySampleCarDataset(cfg, split)
     else:
         raise Exception("Unknown dataset: %s" % dataset_name)
 
@@ -89,7 +89,7 @@ class CityDataset(torch.utils.data.Dataset):
             # In layout mode, FACADE and ROOF are considered as the same class
             return self.cfg.N_CLASSES if layout else self.cfg.BLDG.N_CLASSES
         elif self.inst == "CAR":
-            raise NotImplementedError
+            return 2  # 0 -> NULL, 1 -> CAR
         else:
             raise ValueError("Unknown mode: %s" % self.inst)
 
@@ -229,7 +229,8 @@ class CityDataset(torch.utils.data.Dataset):
                                 instances["inst"]["range"][0],
                                 instances["inst"]["range"][1],
                             )
-                            if instances["inst"]["cond"](i)
+                            if "cond" not in instances["inst"]
+                            or instances["inst"]["cond"](i)
                         ],
                         "cont_instances": instances["cnt_inst"],
                     },
@@ -283,7 +284,7 @@ class GoogleEarthDataset(CityDataset):
         self.renderings = self._get_renderings(dt_cfg, split, inst)
         self.n_renderings = len(self.renderings)
         self.semantic_classes = {
-            "BLDG_FACADE": {
+            "BLDG": {
                 "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
                 "cond": {
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
@@ -334,7 +335,11 @@ class GoogleEarthDataset(CityDataset):
                 files, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
             )
 
-        return files if split == "train" else [f for f in files if f["name"].endswith("00")][:32]
+        return (
+            files
+            if split == "train"
+            else [f for f in files if f["name"].endswith("00")][:32]
+        )
 
     def _get_trajectory_city(self, trajectory):
         # Trajectory name example: US-SanFrancisco-Chinatown-R624-A354
@@ -415,7 +420,7 @@ class CitySampleDataset(CityDataset):
 
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
         self.semantic_classes = {
-            "BLDG_FACADE": {
+            "BLDG": {
                 "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
                 "cond": {
                     "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
@@ -446,7 +451,8 @@ class CitySampleDataset(CityDataset):
         )
 
     def _get_renderings(self, cfg, split, inst):
-        cities = ["City%02d" % (i + 1) for i in range(cfg.N_CITIES)]
+        # cities = ["City%02d" % (i + 1) for i in range(cfg.N_CITIES)]
+        cities = ["City00"]
         files = [
             {
                 "name": "%s/%s/%04d" % (c, s, i),
@@ -540,6 +546,92 @@ class CitySampleBuildingDataset(CitySampleDataset):
                     "inst": self.semantic_classes["BLDG_FACADE"]["cond"],
                     # NOTE: The ROOF instance is the next to the FACADE instance
                     "cnt_inst": [1],
+                },
+                semantic_classes=self.semantic_classes,
+            ),
+        )
+
+    def _get_data_transform(self, _, tr):
+        return utils.transforms.Compose(
+            [
+                tr["RandomInstances"],
+                tr["Resize"],
+                tr["BevCrop"],
+                tr["MaskRaydirs"],
+                tr["InstanceCrop"],
+                tr["InstanceToSemantic"],
+                tr["ToOneHot"],
+                tr["ToTensor"],
+            ]
+        )
+
+
+class CitySampleCarDataset(CitySampleDataset):
+    def __init__(self, cfg, split):
+        super(CitySampleCarDataset, self).__init__(cfg, split, inst="CAR")
+
+        dt_cfg = cfg.DATASETS.CITY_SAMPLE
+        self.semantic_classes = {
+            "CAR": {
+                "smtc": 1,
+                "cond": {
+                    "range": (dt_cfg.CAR.INS_RANGE[0], dt_cfg.CAR.INS_RANGE[1]),
+                },
+            },
+            # Mask the rest of the classes
+            "ROAD": {
+                "smtc": 0,
+                "cond": {
+                    "range": dt_cfg.CLASSES["ROAD"],
+                },
+            },
+            "FREEWAY": {
+                "smtc": 0,
+                "cond": {
+                    "range": dt_cfg.CLASSES["FREEWAY"],
+                },
+            },
+            "WATER": {
+                "smtc": 0,
+                "cond": {
+                    "range": dt_cfg.CLASSES["WATER"],
+                },
+            },
+            "SKY": {
+                "smtc": 0,
+                "cond": {
+                    "range": dt_cfg.CLASSES["SKY"],
+                },
+            },
+            "ZONE": {
+                "smtc": 0,
+                "cond": {
+                    "range": dt_cfg.CLASSES["ZONE"],
+                },
+            },
+            "BLDG": {
+                "smtc": 0,
+                "cond": {
+                    "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
+                },
+            },
+        }
+        self.transforms = self._get_data_transform(
+            split,
+            self._get_transformations(
+                dt_cfg,
+                bev_crop_size=dt_cfg.CAR.VOL_SIZE,
+                img_size=dt_cfg.IMAGE_SIZE,
+                img_crop_size=(
+                    cfg.TRAIN.GANCRAFT.CROP_SIZE
+                    if split == "train"
+                    else cfg.TEST.GANCRAFT.CROP_SIZE
+                ),
+                rel_ftp_bbox=False,
+                # `instances` is used for the RandomInstances transformation
+                instances={
+                    "inst": self.semantic_classes["CAR"]["cond"],
+                    "cnt_inst": [],
                 },
                 semantic_classes=self.semantic_classes,
             ),

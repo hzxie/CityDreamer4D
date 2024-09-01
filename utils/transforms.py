@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-24 22:00:34
+# @Last Modified at: 2024-09-01 16:44:23
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -270,10 +270,15 @@ class InstanceToSemantic(object):
             mapper = {}
             for i in data["inst"]:
                 for sc in self.semantic_classes.values():
+                    range_cond = (
+                        sc["cond"]["range"]
+                        if type(sc["cond"]["range"]) in [tuple, list]
+                        else (sc["cond"]["range"], sc["cond"]["range"] + 1)
+                    )
                     if (
-                        i >= sc["cond"]["range"][0]
-                        and i < sc["cond"]["range"][1]
-                        and sc["cond"]["cond"](i)
+                        i >= range_cond[0]
+                        and i < range_cond[1]
+                        and ("cond" not in sc["cond"] or sc["cond"]["cond"](i))
                     ):
                         mapper[i] = sc["smtc"]
 

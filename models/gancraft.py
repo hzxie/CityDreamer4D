@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-12 19:53:21
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-28 13:56:58
+# @Last Modified at: 2024-09-01 23:41:45
 # @Email:  root@haozhexie.com
 # @Ref: https://github.com/hzxie/CityDreamer/blob/master/models/gancraft.py
 
