@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-09-01 23:42:19
+# @Last Modified at: 2024-09-02 20:33:49
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -41,8 +41,8 @@ cfg.DATASETS.CITY_SAMPLE.PIN_MEMORY              = ["td_hf", "seg_lyt", "ftp_sta
 cfg.DATASETS.CITY_SAMPLE.IMAGE_SIZE              = (960, 540)
 cfg.DATASETS.CITY_SAMPLE.N_REPEAT                = 1
 cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2560
-cfg.DATASETS.CITY_SAMPLE.N_CITIES                = 5        # 10
-cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000     # 3000
+cfg.DATASETS.CITY_SAMPLE.CITIES                  = [i for i in range(11)]
+cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
 cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"ROAD": 1, "FREEWAY": 2,"CAR": 3, "WATER": 4, "SKY": 5, "ZONE": 6, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
 cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64

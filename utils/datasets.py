@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-09-01 22:20:33
+# @Last Modified at: 2024-09-02 20:31:50
 # @Email:  root@haozhexie.com
 
 import json
@@ -62,7 +62,7 @@ class CityDataset(torch.utils.data.Dataset):
         self.transforms = None
 
     @staticmethod
-    def get_instance_renderings(renderings, inst_range=None, index_file=None):
+    def get_instance_renderings(renderings, instances=None, index_file=None):
         instance_renderings = []
         if os.path.exists(index_file):
             with open(index_file) as fp:
@@ -71,9 +71,7 @@ class CityDataset(torch.utils.data.Dataset):
             for r in tqdm(renderings, desc="Checking visible instances ..."):
                 data = utils.io.IO.get(r["raycasting"])
                 ins_map = data["voxel_id"][..., 0, 0] * data["mask"]
-                visible_ins = np.unique(
-                    ins_map[np.isin(ins_map, [i for i in range(*inst_range)])]
-                )
+                visible_ins = np.unique(ins_map[np.isin(ins_map, instances)])
                 if len(visible_ins) > 0:
                     instance_renderings.append(r)
 
@@ -328,12 +326,12 @@ class GoogleEarthDataset(CityDataset):
             for t in trajectories
             for i in range(cfg.N_VIEWS)
         ]
-        if cfg.PIN_MEMORY:
-            self._pin_memory(cfg, files)
         if inst is not None:
             files = CityDataset.get_instance_renderings(
-                files, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
+                files, [i for i in range(*cfg[inst].INS_RANGE)], cfg[inst].INDEX_FILE
             )
+        if cfg.PIN_MEMORY:
+            self._pin_memory(cfg, files)
 
         return (
             files
@@ -451,8 +449,7 @@ class CitySampleDataset(CityDataset):
         )
 
     def _get_renderings(self, cfg, split, inst):
-        # cities = ["City%02d" % (i + 1) for i in range(cfg.N_CITIES)]
-        cities = ["City00"]
+        cities = ["City%02d" % i for i in cfg.CITIES]
         files = [
             {
                 "name": "%s/%s/%04d" % (c, s, i),
@@ -472,12 +469,13 @@ class CitySampleDataset(CityDataset):
             for i in range(cfg.N_VIEWS)
             for s in cfg.CITY_STYLES
         ]
-        if cfg.PIN_MEMORY:
-            self._pin_memory(cfg, files)
         if inst is not None:
             files = CityDataset.get_instance_renderings(
-                files, cfg[inst].INS_RANGE, cfg[inst].INDEX_FILE
+                files, [i for i in range(*cfg[inst].INS_RANGE)], cfg[inst].INDEX_FILE
             )
+            files = [f for f in files if f["name"][:6] in cities]
+        if cfg.PIN_MEMORY:
+            self._pin_memory(cfg, files)
 
         return (
             files
