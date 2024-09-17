@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-28 15:19:41
+# @Last Modified at: 2024-09-17 10:04:09
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -82,8 +82,7 @@ def get_cfg_value(key):
 
 
 def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
-    HOU_SCALE = 5
-    scale_factor = scale / HOU_SCALE
+    HOU_SCALE = 4
     # The constants defined in HOU_CLASSES only used in this function.
     HOU_CLASSES = {
         "ROAD": 1,
@@ -98,14 +97,13 @@ def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
     }
     HOU_INV_INDEX = {v: k for k, v in HOU_CLASSES.items()}
     HOU_SCALES = {
-        "ROAD": int(10 * scale_factor),
-        "FWY_DECK": int(10 * scale_factor),
-        "FWY_PILLAR": int(5 * scale_factor),
-        "FWY_BARRIER": int(8 * scale_factor),
-        "CAR": int(2 * scale_factor + 0.5),
-        "WATER": int(50 * scale_factor),
-        "ZONE": int(10 * scale_factor),
-        "BLDG_FACADE": int(10 * scale_factor),
+        "ROAD": int(2 * HOU_SCALE),
+        "FWY_DECK": int(2 * HOU_SCALE),
+        "FWY_PILLAR": int(1 * HOU_SCALE),
+        "FWY_BARRIER": int(0.25 * HOU_SCALE),
+        "CAR": int(0.25 * HOU_SCALE),
+        "ZONE": int(2 * HOU_SCALE),
+        "BLDG_FACADE": int(2 * HOU_SCALE),
     }
 
     points_file_path = os.path.join(city_dir, "Points.pkl")
@@ -115,10 +113,11 @@ def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
 
     with open(points_file_path, "rb") as fp:
         points = pickle.load(fp)
-    # Scale the point coordinates by scale_factor
-    points[:, :3] = (points[:, :3] * scale_factor + 0.5).astype(np.int16)
+
+    # Make better alignment with the RGB images
+    points[:, :2] -= 1
     # Make all the point coordinates positive at z-axis
-    points[:, 2] += z_offset
+    points[:, 2] += z_offset  # - 1
 
     # Separate the points into three categories: CAR, FWY, and REST
     car_rows = (points[:, 3] >= inst_ranges["CAR"][0]) & (
