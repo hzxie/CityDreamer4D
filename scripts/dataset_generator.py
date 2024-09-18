@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-09-17 10:04:09
+# @Last Modified at: 2024-09-18 08:58:24
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -246,45 +246,51 @@ def _get_look_at_position(cam_position, cam_quaternion):
 
 
 def get_bev_map_bbox(projection, cam_rig, cam_pose, inst_bboxes, patch_size, bldg_cfg):
-    fe = extensions.footprint_extruder.FootprintExtruder(
-        roof_height=bldg_cfg["ROOF_HEIGHT"],
-        roof_id_offset=bldg_cfg["ROOF_OFFSET"],
-        bldg_inst_range=bldg_cfg["INST_RANGE"],
-    )
-    # Scale the projection maps to the patch size
-    scaled_projection = _get_projection_patch(projection, patch_size)
-    scale_factor = patch_size / projection["INS_BEV"].shape[0]
-    # Adjust the camera position and look-at position
-    _cam_pose = {
-        "cam_position": cam_pose["cam_position"] * scale_factor,
-        "cam_look_at": cam_pose["cam_look_at"] * scale_factor,
-    }
+    # The BEV map bounding box is determined by camera positions by default
+    patch_center = cam_pose["cam_look_at"][:2]
 
-    volume = torch.zeros(
-        (patch_size, patch_size, int(bldg_cfg["MAX_HEIGHT"] * scale_factor) + 1),
-        dtype=torch.int16,
-        device=torch.device("cuda:0"),
-    )
-    volume = fe(
-        volume,
-        scaled_projection["INS_BEV"],
-        scaled_projection["TD_HF"],
-        scaled_projection["BU_HF"],
-    )
-    raycasting = get_ray_voxel_intersection(cam_rig, _cam_pose, volume)
-    voxels = raycasting["voxel_id"][:, :, 0, 0]
-    bldg_voxels = voxels[voxels >= bldg_cfg["INST_RANGE"][0]]
-    if bldg_voxels.size(0) != 0:
-        n_ins_pixels = torch.bincount(bldg_voxels)
-        major_inst = torch.argmax(n_ins_pixels).item()
-        # Convert Bldg.Roof -> Bldg.Facade
-        if major_inst not in inst_bboxes:
-            major_inst -= 1
-        x, y, w, h = inst_bboxes[major_inst]
-        patch_center = np.array([x + w / 2, y + h / 2], dtype=np.float32)
-    else:
-        logging.warning("No building voxels found in the raycasting results.")
-        patch_center = cam_pose["cam_look_at"][:2]
+    # The BEV map bounding box is determined by the major instance in the patch
+    if inst_bboxes is not None:
+        fe = extensions.footprint_extruder.FootprintExtruder(
+            roof_height=bldg_cfg["ROOF_HEIGHT"],
+            roof_id_offset=bldg_cfg["ROOF_OFFSET"],
+            bldg_inst_range=bldg_cfg["INST_RANGE"],
+        )
+        # Scale the projection maps to the patch size
+        scaled_projection = _get_projection_patch(projection, patch_size)
+        scale_factor = patch_size / projection["INS_BEV"].shape[0]
+        # Adjust the camera position and look-at position
+        _cam_pose = {
+            "cam_position": cam_pose["cam_position"] * scale_factor,
+            "cam_look_at": cam_pose["cam_look_at"] * scale_factor,
+        }
+
+        volume = torch.zeros(
+            (patch_size, patch_size, int(bldg_cfg["MAX_HEIGHT"] * scale_factor) + 1),
+            dtype=torch.int16,
+            device=torch.device("cuda:0"),
+        )
+        volume = fe(
+            volume,
+            scaled_projection["INS_BEV"],
+            scaled_projection["TD_HF"],
+            scaled_projection["BU_HF"],
+        )
+        raycasting = get_ray_voxel_intersection(cam_rig, _cam_pose, volume)
+        voxels = raycasting["voxel_id"][:, :, 0, 0]
+        bldg_voxels = voxels[voxels >= bldg_cfg["INST_RANGE"][0]]
+        if bldg_voxels.size(0) != 0:
+            n_ins_pixels = torch.bincount(bldg_voxels)
+            major_inst = torch.argmax(n_ins_pixels).item()
+            # Convert Bldg.Roof -> Bldg.Facade
+            if major_inst not in inst_bboxes:
+                major_inst -= 1
+            x, y, w, h = inst_bboxes[major_inst]
+            patch_center = np.array([x + w / 2, y + h / 2], dtype=np.float32)
+        else:
+            logging.warning("No building voxels found in the raycasting results.")
+            # Fallback to the default patch center
+            # patch_center = cam_pose["cam_look_at"][:2]
 
     # Ordered by: (x, y)
     patch_center = (patch_center + 0.5).astype(np.int32)
@@ -507,11 +513,10 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 get_cfg_value("Z_OFFSET"),
             )
             bev_map_bbox = get_bev_map_bbox(
-                # City00 only has cars. The camera center should be determined by the car instances.
-                projections["CAR"] if city == "City00" else projections["REST"],
+                projections["REST"],
                 cam_rig,
                 cam_pose,
-                inst_bboxes,
+                inst_bboxes if city != "City00" else None,
                 get_cfg_value("VOL_SIZE"),
                 bldg_cfg,
             )
