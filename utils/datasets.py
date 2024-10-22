@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-09-02 20:31:50
+# @Last Modified at: 2024-10-22 20:47:54
 # @Email:  root@haozhexie.com
 
 import json
@@ -87,7 +87,7 @@ class CityDataset(torch.utils.data.Dataset):
             # In layout mode, FACADE and ROOF are considered as the same class
             return self.cfg.N_CLASSES if layout else self.cfg.BLDG.N_CLASSES
         elif self.inst == "CAR":
-            return 2  # 0 -> NULL, 1 -> CAR
+            return self.cfg.CAR.N_CLASSES  # 0 -> NULL, 1-6 -> 6 Car Shapes
         else:
             raise ValueError("Unknown mode: %s" % self.inst)
 
@@ -569,51 +569,33 @@ class CitySampleCarDataset(CitySampleDataset):
         super(CitySampleCarDataset, self).__init__(cfg, split, inst="CAR")
 
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
-        self.semantic_classes = {
-            "CAR": {
-                "smtc": 1,
-                "cond": {
-                    "range": (dt_cfg.CAR.INS_RANGE[0], dt_cfg.CAR.INS_RANGE[1]),
-                },
-            },
-            # Mask the rest of the classes
-            "ROAD": {
+        self.semantic_classes = {}
+        # Mask the rest of the classes
+        for c in ["ROAD", "FREEWAY", "WATER", "SKY", "ZONE"]:
+            self.semantic_classes[c] = {
                 "smtc": 0,
                 "cond": {
-                    "range": dt_cfg.CLASSES["ROAD"],
+                    "range": dt_cfg.CLASSES[c],
                 },
-            },
-            "FREEWAY": {
-                "smtc": 0,
-                "cond": {
-                    "range": dt_cfg.CLASSES["FREEWAY"],
-                },
-            },
-            "WATER": {
-                "smtc": 0,
-                "cond": {
-                    "range": dt_cfg.CLASSES["WATER"],
-                },
-            },
-            "SKY": {
-                "smtc": 0,
-                "cond": {
-                    "range": dt_cfg.CLASSES["SKY"],
-                },
-            },
-            "ZONE": {
-                "smtc": 0,
-                "cond": {
-                    "range": dt_cfg.CLASSES["ZONE"],
-                },
-            },
-            "BLDG": {
-                "smtc": 0,
-                "cond": {
-                    "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
-                },
+            }
+        self.semantic_classes["BLDG"] = {
+            "smtc": 0,
+            "cond": {
+                "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
             },
         }
+        # Construct the semantic classes for the CAR dataset
+        for c in range(1, dt_cfg.CAR.N_CLASSES):
+            self.semantic_classes["CAR-%d" % c] = {
+                "smtc": c,
+                "cond": {
+                    "range": (dt_cfg.CAR.INS_RANGE[0], dt_cfg.CAR.INS_RANGE[1]),
+                    # NOTE: The c=c in the lambda function ensures that the current value
+                    # of c is captured and stored as a default argument
+                    "cond": lambda x, c=c: x % 6 == c - 1,
+                },
+            }
+
         self.transforms = self._get_data_transform(
             split,
             self._get_transformations(
@@ -628,7 +610,9 @@ class CitySampleCarDataset(CitySampleDataset):
                 rel_ftp_bbox=False,
                 # `instances` is used for the RandomInstances transformation
                 instances={
-                    "inst": self.semantic_classes["CAR"]["cond"],
+                    "inst": {
+                        "range": (dt_cfg.CAR.INS_RANGE[0], dt_cfg.CAR.INS_RANGE[1]),
+                    },
                     "cnt_inst": [],
                 },
                 semantic_classes=self.semantic_classes,

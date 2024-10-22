@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-09-01 16:44:23
+# @Last Modified at: 2024-10-22 21:00:25
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -243,13 +243,11 @@ class InstanceToSemantic(object):
 
     def _instances_to_semantic(self, ins_map, mapper):
         if mapper is not None:
-            instances = []
-            # Instance Mode: the specific building instance are mapped to its semantic label
+            # Set the rest instances are set to NULL
+            ins_map[~np.isin(ins_map, list(mapper.keys()))] = 0
+            # Instance Mode: the specific instance is mapped to its semantic label
             for src, dst in mapper.items():
                 ins_map[ins_map == src] = dst
-                instances.append(dst)
-            # The rest instances are set to NULL
-            ins_map[~np.isin(ins_map, instances)] = 0
         else:
             # Background Mode: all instances are set to their semantic classes.
             for sc in self.semantic_classes.values():

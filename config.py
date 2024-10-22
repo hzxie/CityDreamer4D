@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-09-02 20:33:49
+# @Last Modified at: 2024-10-22 21:01:22
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -56,6 +56,7 @@ cfg.DATASETS.CITY_SAMPLE.BLDG.VOL_SIZE           = 768
 cfg.DATASETS.CITY_SAMPLE.BLDG.INS_RANGE          = [100, 5000]
 cfg.DATASETS.CITY_SAMPLE.CAR                     = EasyDict()
 cfg.DATASETS.CITY_SAMPLE.CAR.INDEX_FILE          = "./data/city-sample-car.json"
+cfg.DATASETS.CITY_SAMPLE.CAR.N_CLASSES           = 7
 cfg.DATASETS.CITY_SAMPLE.CAR.VOL_SIZE            = 32
 cfg.DATASETS.CITY_SAMPLE.CAR.INS_RANGE           = [5000, 16384]
 
