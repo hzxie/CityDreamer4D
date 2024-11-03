@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-09-18 08:58:24
+# @Last Modified at: 2024-11-03 18:23:34
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -251,11 +251,6 @@ def get_bev_map_bbox(projection, cam_rig, cam_pose, inst_bboxes, patch_size, bld
 
     # The BEV map bounding box is determined by the major instance in the patch
     if inst_bboxes is not None:
-        fe = extensions.footprint_extruder.FootprintExtruder(
-            roof_height=bldg_cfg["ROOF_HEIGHT"],
-            roof_id_offset=bldg_cfg["ROOF_OFFSET"],
-            bldg_inst_range=bldg_cfg["INST_RANGE"],
-        )
         # Scale the projection maps to the patch size
         scaled_projection = _get_projection_patch(projection, patch_size)
         scale_factor = patch_size / projection["INS_BEV"].shape[0]
@@ -270,11 +265,17 @@ def get_bev_map_bbox(projection, cam_rig, cam_pose, inst_bboxes, patch_size, bld
             dtype=torch.int16,
             device=torch.device("cuda:0"),
         )
-        volume = fe(
+        volume = extensions.footprint_extruder.extrude_footprint(
             volume,
             scaled_projection["INS_BEV"],
             scaled_projection["TD_HF"],
             scaled_projection["BU_HF"],
+            0,
+            bldg_cfg["ROOF_HEIGHT"],
+            0,
+            bldg_cfg["ROOF_OFFSET"],
+            bldg_cfg["INST_RANGE"][0],
+            bldg_cfg["INST_RANGE"][1],
         )
         raycasting = get_ray_voxel_intersection(cam_rig, _cam_pose, volume)
         voxels = raycasting["voxel_id"][:, :, 0, 0]
@@ -300,12 +301,6 @@ def get_bev_map_bbox(projection, cam_rig, cam_pose, inst_bboxes, patch_size, bld
 
 
 def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
-    fe = extensions.footprint_extruder.FootprintExtruder(
-        roof_height=bldg_cfg["ROOF_HEIGHT"],
-        roof_id_offset=bldg_cfg["ROOF_OFFSET"],
-        bldg_inst_range=bldg_cfg["INST_RANGE"],
-    )
-
     volume = torch.zeros(
         (vol_size, vol_size, bldg_cfg["MAX_HEIGHT"]),
         dtype=torch.int16,
@@ -318,11 +313,17 @@ def get_volume_with_scale(projections, bev_map_bbox, bldg_cfg, vol_size):
         assert torch.min(_projections["TD_HF"]) >= 0
         assert torch.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
 
-        volume = fe(
+        volume = extensions.footprint_extruder.extrude_footprint(
             volume,
             _projections["INS_BEV"],
             _projections["TD_HF"],
             _projections["BU_HF"],
+            0,
+            bldg_cfg["ROOF_HEIGHT"],
+            0,
+            bldg_cfg["ROOF_OFFSET"],
+            bldg_cfg["INST_RANGE"][0],
+            bldg_cfg["INST_RANGE"][1],
         )
     return volume.squeeze(dim=0)
 

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-29 18:47:09
+# @Last Modified at: 2024-11-03 18:24:30
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -319,12 +319,6 @@ def get_hf_seg_tensor(part_hf, part_seg, n_layout_classes, bldg_cfg, output_devi
 
 
 def get_seg_volume(projections, bev_map_bbox, vol_sizes, bldg_cfg):
-    footprint_extruder = extensions.footprint_extruder.FootprintExtruder(
-        roof_height=bldg_cfg["ROOF_HEIGHT"],
-        roof_id_offset=bldg_cfg["ROOF_OFFSET"],
-        bldg_inst_range=bldg_cfg["INST_RANGE"],
-    )
-
     seg_volume = torch.zeros(
         (vol_sizes["LAYOUT"], vol_sizes["LAYOUT"], bldg_cfg["MAX_HEIGHT"]),
         dtype=(
@@ -348,11 +342,17 @@ def get_seg_volume(projections, bev_map_bbox, vol_sizes, bldg_cfg):
 
         assert np.min(_projections["TD_HF"]) >= 0
         assert np.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
-        seg_volume = footprint_extruder(
+        seg_volume = extensions.footprint_extruder.extrude_footprint(
             seg_volume,
             torch.from_numpy(_projections["INS_BEV"]).to(seg_volume.device),
             torch.from_numpy(_projections["TD_HF"]).to(seg_volume.device),
             torch.from_numpy(_projections["BU_HF"]).to(seg_volume.device),
+            0,
+            bldg_cfg["ROOF_HEIGHT"],
+            0,
+            bldg_cfg["ROOF_OFFSET"],
+            bldg_cfg["INST_RANGE"][0],
+            bldg_cfg["INST_RANGE"][1],
         )
 
     logging.debug("The shape of SegVolume: %s" % (seg_volume.size(),))
@@ -803,8 +803,8 @@ def main(
 
     # Generate camera trajectories
     logging.info("Generating camera poses ...")
-    radius = np.random.randint(128, 512)
-    altitude = np.random.randint(256, 512)
+    radius = 512  # np.random.randint(128, 512)
+    altitude = 512  # np.random.randint(256, 512)
     logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
     cam_pose = get_orbit_camera_positions(
         radius,
@@ -886,7 +886,7 @@ def main(
         )
         img = (utils.helpers.tensor_to_image(img, "RGB") * 255).astype(np.uint8)
         frames.append(img[..., ::-1])
-        # cv2.imwrite("output/frames/%04d.jpg" % f_idx, img[..., ::-1])
+        cv2.imwrite("output/frames/%04d.jpg" % f_idx, img[..., ::-1])
 
     get_video(frames, output_file, IMG_CFG)
 

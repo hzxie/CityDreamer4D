@@ -3,14 +3,24 @@
  * @Author: Haozhe Xie
  * @Date:   2023-03-26 11:06:18
  * @Last Modified by: Haozhe Xie
- * @Last Modified at: 2024-08-12 16:17:03
+ * @Last Modified at: 2024-11-03 18:19:02
  * @Email:  root@haozhexie.com
  */
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <torch/extension.h>
+
+#include <ATen/cuda/CUDAContext.h>
+#include <torch/torch.h>
+
+// NOTE: AT_ASSERT has become AT_CHECK on master after 0.4.
+#define CHECK_CUDA(x) AT_ASSERTM(x.is_cuda(), #x " must be a CUDA footprint")
+#define CHECK_CONTIGUOUS(x)                                                    \
+  AT_ASSERTM(x.is_contiguous(), #x " must be contiguous")
+#define CHECK_INPUT(x)                                                         \
+  CHECK_CUDA(x);                                                               \
+  CHECK_CONTIGUOUS(x)
 
 #define CUDA_NUM_THREADS 512
 #define TILE_DIM 16
@@ -46,8 +56,16 @@ __global__ void extrude_footprint_ext_cuda_kernel(
 torch::Tensor extrude_footprint_ext_cuda_forward(
     torch::Tensor volume, torch::Tensor bev_ins_map, torch::Tensor hf_td,
     torch::Tensor hf_bu, int l1_height, int roof_height, int l1_id_offset,
-    int roof_id_offset, int bldg_inst_min, int bldg_inst_max,
-    cudaStream_t stream) {
+    int roof_id_offset, int bldg_inst_min, int bldg_inst_max) {
+  CHECK_INPUT(volume);
+  CHECK_INPUT(bev_ins_map);
+  CHECK_INPUT(hf_td);
+  CHECK_INPUT(hf_bu);
+
+  int curDevice = -1;
+  cudaGetDevice(&curDevice);
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream(curDevice);
+
   size_t height = volume.size(0);
   size_t width = volume.size(1);
   size_t depth = volume.size(2);

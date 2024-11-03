@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-03-24 20:35:43
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2023-12-23 10:41:24
+# @Last Modified at: 2024-11-03 16:51:34
 # @Email:  root@haozhexie.com
 
 from setuptools import setup
@@ -12,10 +12,10 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 setup(
     name="footprint_extruder",
-    version="1.0.0",
+    version="1.1.0",
     ext_modules=[
         CUDAExtension(
-            "footprint_extruder_ext",
+            "footprint_extruder",
             [
                 "bindings.cpp",
                 "footprint_extruder_ext.cu",

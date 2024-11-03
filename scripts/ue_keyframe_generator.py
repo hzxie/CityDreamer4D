@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-08-29 21:25:09
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-30 19:59:05
+# @Last Modified at: 2024-11-03 18:34:34
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -94,11 +94,6 @@ def get_bev_map_bbox(projection, classes):
 
 
 def get_volume(projections, bldg_cfg):
-    fe = extensions.footprint_extruder.FootprintExtruder(
-        roof_height=bldg_cfg["ROOF_HEIGHT"],
-        roof_id_offset=bldg_cfg["ROOF_OFFSET"],
-        bldg_inst_range=bldg_cfg["INST_RANGE"],
-    )
     h, w = projections["REST"]["INS_BEV"].shape
     d = torch.max(projections["REST"]["TD_HF"]).item() + 1
     volume = torch.zeros(
@@ -107,11 +102,17 @@ def get_volume(projections, bldg_cfg):
         device=torch.device("cuda:0"),
     )
     for p in projections.values():
-        volume = fe(
+        volume = extensions.footprint_extruder.extrude_footprint(
             volume,
             p["INS_BEV"],
             p["TD_HF"],
             p["BU_HF"],
+            0,
+            bldg_cfg["ROOF_HEIGHT"],
+            0,
+            bldg_cfg["ROOF_OFFSET"],
+            bldg_cfg["INST_RANGE"][0],
+            bldg_cfg["INST_RANGE"][1],
         )
     return volume
 
