@@ -3,7 +3,7 @@
  * @Author: Haozhe Xie
  * @Date:   2024-11-03 16:42:51
  * @Last Modified by: Haozhe Xie
- * @Last Modified at: 2024-11-03 20:35:28
+ * @Last Modified at: 2024-11-04 11:09:25
  * @Email:  root@haozhexie.com
  */
 
@@ -22,74 +22,68 @@
 #define TILE_DIM 16
 
 inline __device__ bool
-get_local_skeleton_map_value(int x, int y, int width, int height,
-                             const bool *__restrict__ skeleton_map) {
+get_skeleton_map_value(int x, int y, int width, int height,
+                       const bool *__restrict__ skeleton_map) {
   if (x < 0 || x >= width || y < 0 || y >= height) {
     return false;
   }
   return skeleton_map[y * width + x];
 }
 
-__device__ void
-get_local_skeleton_map_values(int x, int y, int width, int height,
-                              const bool *__restrict__ skeleton_map,
-                              bool *__restrict__ local_skeleton_map) {
-  local_skeleton_map[0] =
-      get_local_skeleton_map_value(x - 1, y - 1, width, height, skeleton_map);
-  local_skeleton_map[1] =
-      get_local_skeleton_map_value(x, y - 1, width, height, skeleton_map);
-  local_skeleton_map[2] =
-      get_local_skeleton_map_value(x + 1, y - 1, width, height, skeleton_map);
-  local_skeleton_map[3] =
-      get_local_skeleton_map_value(x - 1, y, width, height, skeleton_map);
-  local_skeleton_map[4] =
-      get_local_skeleton_map_value(x + 1, y, width, height, skeleton_map);
-  local_skeleton_map[5] =
-      get_local_skeleton_map_value(x - 1, y + 1, width, height, skeleton_map);
-  local_skeleton_map[6] =
-      get_local_skeleton_map_value(x, y + 1, width, height, skeleton_map);
-  local_skeleton_map[7] =
-      get_local_skeleton_map_value(x + 1, y + 1, width, height, skeleton_map);
-}
-
-inline __device__ bool
-is_ngr_pts_collinear(const bool *__restrict__ local_skeleton_map) {
-    if (local_skeleton_map[0] && local_skeleton_map[7]) {
-        return true;
-    } else if (local_skeleton_map[1] && local_skeleton_map[6]) {
-        return true;
-    } else if (local_skeleton_map[2] && local_skeleton_map[5]) {
-        return true;
-    } else if (local_skeleton_map[3] && local_skeleton_map[4]) {
-        return true;
-    }
-    return false;
+__device__ short get_kpt_map_value(int x, int y, int width, int height,
+                                   const bool *__restrict__ skeleton_map) {
+  short value = 0;
+  // x - 1, y - 1 -> 1
+  if (get_skeleton_map_value(x - 1, y - 1, width, height, skeleton_map)) {
+    value += 1;
+  }
+  // x, y - 1 -> 2
+  if (get_skeleton_map_value(x, y - 1, width, height, skeleton_map)) {
+    value += 2;
+  }
+  // x + 1, y - 1 -> 4
+  if (get_skeleton_map_value(x + 1, y - 1, width, height, skeleton_map)) {
+    value += 4;
+  }
+  // x - 1, y -> 8
+  if (get_skeleton_map_value(x - 1, y, width, height, skeleton_map)) {
+    value += 8;
+  }
+  // x + 1, y -> 16
+  if (get_skeleton_map_value(x + 1, y, width, height, skeleton_map)) {
+    value += 16;
+  }
+  // x - 1, y + 1 -> 32
+  if (get_skeleton_map_value(x - 1, y + 1, width, height, skeleton_map)) {
+    value += 32;
+  }
+  // x, y + 1 -> 64
+  if (get_skeleton_map_value(x, y + 1, width, height, skeleton_map)) {
+    value += 64;
+  }
+  // x + 1, y + 1 -> 128
+  if (get_skeleton_map_value(x + 1, y + 1, width, height, skeleton_map)) {
+    value += 128;
+  }
+  return value;
 }
 
 __global__ void keypoint_detection_kernel(int width, int height,
                                           const bool *__restrict__ skeleton_map,
-                                          bool *__restrict__ kpts_map) {
+                                          short *__restrict__ kpt_map) {
   size_t x = blockIdx.x * blockDim.x + threadIdx.x; // width
   size_t y = blockIdx.y * blockDim.y + threadIdx.y; // height
 
+  int idx = y * width + x;
   if (x < width && y < height) {
-    if (skeleton_map[y * width + x]) {
+    if (!skeleton_map[idx]) {
       return;
     }
-    bool *local_kpts_map = kpts_map + y * width + x * 9;
-    get_local_skeleton_map_values(x, y, width, height, skeleton_map,
-                                  local_kpts_map);
-    int ngr_pts = 0;
-#pragma unroll
-    for (int i = 0; i < 8; i++) {
-      if (local_kpts_map[i]) {
-        ++ngr_pts;
-      }
-    }
-    if (ngr_pts != 2 || !is_ngr_pts_collinear(local_kpts_map)) {
-      local_kpts_map[8] = true;
-    } else {
-      local_kpts_map[8] = false;
+    kpt_map[idx] = get_kpt_map_value(x, y, width, height, skeleton_map);
+    // ngr_pts_collinear values: 1 + 128; 2 + 64; 4 + 32; 8 + 16
+    if (kpt_map[idx] == 129 || kpt_map[idx] == 66 || kpt_map[idx] == 36 ||
+        kpt_map[idx] == 24) {
+      kpt_map[idx] = 0;
     }
   }
 }
@@ -102,24 +96,23 @@ torch::Tensor detect_keypoints_ext_cuda_forward(torch::Tensor skeleton_map) {
   cudaStream_t stream = at::cuda::getCurrentCUDAStream(curDevice);
   torch::Device device = skeleton_map.device();
 
-  const int CHANNELS = 9;
   int height = skeleton_map.size(0);
   int width = skeleton_map.size(1);
-  torch::Tensor kpts_map =
-      torch::empty({height, width, CHANNELS},
-                   torch::TensorOptions().dtype(torch::kBool).device(device));
+  torch::Tensor kpt_map =
+      torch::zeros({height, width},
+                   torch::TensorOptions().dtype(torch::kShort).device(device));
 
-  dim3 dimBlock(TILE_DIM, TILE_DIM);
-  dim3 dimGrid((width + blockDim.x - 1) / blockDim.x,
+  dim3 blockDim(TILE_DIM, TILE_DIM);
+  dim3 gridDim((width + blockDim.x - 1) / blockDim.x,
                (height + blockDim.y - 1) / blockDim.y);
 
-  keypoint_detection_kernel<<<dimGrid, dimBlock, 0, stream>>>(
-      width, height, skeleton_map.data_ptr<bool>(), kpts_map.data_ptr<bool>());
+  keypoint_detection_kernel<<<gridDim, blockDim, 0, stream>>>(
+      width, height, skeleton_map.data_ptr<bool>(), kpt_map.data_ptr<short>());
 
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf("Error in detect_keypoints_ext_cuda_forward: %s\n",
            cudaGetErrorString(err));
   }
-  return kpts_map;
+  return kpt_map;
 }
