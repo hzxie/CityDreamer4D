@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-10-22 21:01:22
+# @Last Modified at: 2024-11-02 16:09:15
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -26,7 +26,7 @@ cfg.DATASETS.GOOGLE_EARTH.N_REPEAT               = 1
 cfg.DATASETS.GOOGLE_EARTH.MAX_HEIGHT             = 640
 cfg.DATASETS.GOOGLE_EARTH.N_VIEWS                = 60
 cfg.DATASETS.GOOGLE_EARTH.N_CLASSES              = 7
-cfg.DATASETS.GOOGLE_EARTH.CLASSES                = {"ROAD": 1, "BLDG_FACADE": 2, "BLDG_ROOF": 7}
+cfg.DATASETS.GOOGLE_EARTH.CLASSES                = {"NULL": 0, "ROAD": 1, "BLDG_FACADE": 2, "VEGT": 3, "CONSTR": 4, "WATER":5 , "ZONE": 6, "BLDG_ROOF": 7}
 cfg.DATASETS.GOOGLE_EARTH.N_MIN_PIXELS           = 64
 cfg.DATASETS.GOOGLE_EARTH.MIN_INSTANCE           = 10
 cfg.DATASETS.GOOGLE_EARTH.VOL_SIZE               = 1536
@@ -44,7 +44,7 @@ cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2560
 cfg.DATASETS.CITY_SAMPLE.CITIES                  = [i for i in range(11)]
 cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
-cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"ROAD": 1, "FREEWAY": 2,"CAR": 3, "WATER": 4, "SKY": 5, "ZONE": 6, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
+cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"NULL": 0, "ROAD": 1, "FREEWAY": 2,"CAR": 3, "WATER": 4, "SKY": 5, "ZONE": 6, "BLDG_FACADE": 7, "BLDG_ROOF": 8}
 cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
 cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
 cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]  # ["Day", "Night"]
