@@ -3,6 +3,7 @@ numpy<2.0.0
 opencv-python
 pillow
 pynvml
+shapely
 scipy
 scikit-image
 tensorboard
