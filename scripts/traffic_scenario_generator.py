@@ -4,17 +4,17 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-09 10:04:34
+# @Last Modified at: 2024-11-09 15:46:57
 # @Email:  root@haozhexie.com
 
 import argparse
 import cv2
-import itertools
 import logging
 import numpy as np
 import os
 import pickle
 import queue
+import scipy.ndimage
 import shapely
 import sys
 import torch
@@ -46,14 +46,14 @@ def get_road_networks(projection_dir, project_names):
     }
     for k, v in projections.items():
         v[v != classes["ROAD"]] = classes["NULL"]
-        # Fix holes in the road network
-        v = cv2.dilate(v.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=2)
-        projections[k] = cv2.erode(v, np.ones((5, 5), np.uint8), iterations=2)
+        # v = cv2.dilate(v.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=2)
+        # projections[k] = cv2.erode(v, np.ones((5, 5), np.uint8), iterations=2)
+        v = scipy.ndimage.gaussian_filter(v * 255, sigma=5)
+        projections[k] = (v >= 128).astype(np.uint8)
 
     # Debug: Visualization
     # import utils.helpers
     # utils.helpers.get_seg_map(projections["REST"]).save("output/test.png")
-    # import pdb; pdb.set_trace()
     return projections
 
 
@@ -257,8 +257,84 @@ def _get_kpts_graph(skeleton, closed):
     # for ways in graphs:
     #     for way in ways:
     #         img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
-    # import pdb; pdb.set_trace()
     return graphs
+
+
+def _get_way_nodes(graphs):
+    nodes = {}
+    ways = {}
+    # Organzing connectivity
+    for graph in graphs:
+        for way in graph:
+            way_id = len(ways)
+            way_nodes = [tuple(n) for n in way["nodes"]]
+            end_nodes = [way_nodes[0], way_nodes[-1]]
+            ways[way_id] = {"nodes": way_nodes}
+            for en in end_nodes:
+                if en not in nodes:
+                    nodes[en] = {"ways": []}
+                nodes[en]["ways"].append(way_id)
+    return nodes, ways
+
+
+def _merge_way_nodes(graphs, kernel):
+    clusters = {}
+    nodes, ways = _get_way_nodes(graphs)
+    # Find neighboring nodes
+    half_kernel = kernel // 2
+    for k, v in nodes.items():
+        if len(v["ways"]) <= 2 or "cluster" in v:
+            continue
+
+        cluster_id = len(clusters)
+        ngr_interxns = []
+        for ox in range(-half_kernel, half_kernel + 1):
+            for oy in range(-half_kernel, half_kernel + 1):
+                ngr_nd_key = (k[0] + ox, k[1] + oy)
+                if ngr_nd_key in nodes:
+                    ngr_interxns.append(ngr_nd_key)
+
+        if len(ngr_interxns) > 1:
+            clusters[cluster_id] = ngr_interxns
+            for ni in ngr_interxns:
+                nodes[ni]["cluster"] = cluster_id
+
+    # Replace way nodes
+    for cv in clusters.values():
+        mean_cord = (np.array(cv).mean(axis=0) + 0.5).astype(np.int32)
+        for cn in cv:
+            for w in nodes[cn]["ways"]:
+                way_nodes = ways[w]["nodes"]
+                for i, wn in enumerate(way_nodes):
+                    if wn == cn:
+                        way_nodes[i] = tuple(mean_cord)
+            # Remove duplicated nodes in the way
+            ways[w]["nodes"] = []
+            for i in range(len(way_nodes)):
+                if i == 0 or way_nodes[i] != way_nodes[i - 1]:
+                    ways[w]["nodes"].append(way_nodes[i])
+
+    # Debug: Visualization
+    # img = np.zeros((19600, 19600), np.uint8)
+    # for way in ways.values():
+    #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
+
+    return [[v for v in ways.values() if len(v["nodes"]) >= 2]]
+
+
+def _remove_short_orphan_ways(graphs, min_length):
+    nodes, ways = _get_way_nodes(graphs)
+    ways_to_remove = []
+    for k, v in ways.items():
+        if len(v["nodes"]) > min_length:
+            continue
+
+        end_nodes = [v["nodes"][0], v["nodes"][-1]]
+        for en in end_nodes:
+            if len(nodes[en]["ways"]) < 2:
+                ways_to_remove.append(k)
+
+    return [[v for k, v in ways.items() if k not in ways_to_remove]]
 
 
 def get_traffic_graphs(traffic_maps):
@@ -268,6 +344,17 @@ def get_traffic_graphs(traffic_maps):
             "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
             "CNTR": _get_kpts_graph(tv["CNTR"], closed=False),
         }
+        # Post-processing for the road centerlines
+        traffic_graphs[tk]["CNTR"] = _merge_way_nodes(
+            traffic_graphs[tk]["CNTR"], kernel=31
+        )
+        traffic_graphs[tk]["CNTR"] = _remove_short_orphan_ways(
+            traffic_graphs[tk]["CNTR"], min_length=128
+        )
+        # Debug: Visualization
+        # img = np.zeros((19600, 19600), np.uint8)
+        # for way in traffic_graphs[tk]["CNTR"][0]:
+        #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
 
     return traffic_graphs
 
@@ -282,7 +369,7 @@ def main(projection_dir, project_names):
     road_networks = get_road_networks(projection_dir, project_names)
     logging.info("Parsing Traffic Maps ...")
     traffic_maps = get_traffic_maps(road_networks)
-    # # Faster Debug
+    # Faster Debug
     # with open("output/traffic_maps.pkl", "rb") as f:
     #     # pickle.dump(traffic_maps, f)
     #     traffic_maps = pickle.load(f)
