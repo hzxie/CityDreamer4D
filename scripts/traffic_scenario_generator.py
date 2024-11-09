@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-07 16:43:49
+# @Last Modified at: 2024-11-09 10:04:34
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -16,7 +16,6 @@ import os
 import pickle
 import queue
 import shapely
-import skimage.morphology
 import sys
 import torch
 
@@ -31,24 +30,6 @@ PROJECT_HOME = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.p
 sys.path.append(PROJECT_HOME)
 
 import extensions.keypoint_detector
-import utils.helpers
-
-# X, Y offsets for 8-connected grid markers.
-# The neighbors are marked as follows:
-#  1  2   4
-#  8  X  16
-# 32 64 128
-KPT_GRID_MARKERS = {
-    1: (-1, -1),
-    2: (0, -1),
-    4: (1, -1),
-    8: (-1, 0),
-    16: (1, 0),
-    32: (-1, 1),
-    64: (0, 1),
-    128: (1, 1),
-}
-MIN_WAY_LENGTH = 4
 
 
 def get_cfg_values(key):
@@ -82,7 +63,9 @@ def _get_road_edges(road_net):
 
 def _get_road_centers(road_net):
     # return skimage.morphology.medial_axis(road_net, return_distance=True)
-    return skimage.morphology.skeletonize(road_net).astype(bool)
+    # return skimage.morphology.skeletonize(road_net).astype(bool)
+    skeleton = cv2.ximgproc.thinning(road_net * 255)
+    return skeleton.astype(bool)
 
 
 def get_traffic_maps(road_networks):
@@ -92,18 +75,50 @@ def get_traffic_maps(road_networks):
             "EDGE": _get_road_edges(v),
             "CNTR": _get_road_centers(v),
         }
-
     return traffic_maps
 
 
-@utils.helpers.static_vars(
-    kpts_values=[a + b for a, b in itertools.combinations(KPT_GRID_MARKERS.keys(), 2)]
-)
+def _get_ngr_node_offsets(kpt_value):
+    # X, Y offsets for 8-connected grid markers.
+    # The neighbors are marked as follows:
+    #  1  2   4
+    #  8  X  16
+    # 32 64 128
+    # fmt: off
+    KPT_GRID_MARKERS = {
+        0x01: (-1, -1), # 1
+        0x02: (0, -1),  # 2
+        0x04: (1, -1),  # 4
+        0x08: (-1, 0),  # 8
+        0x10: (1, 0),   # 16
+        0x20: (-1, 1),  # 32
+        0x40: (0, 1),   # 64
+        0x80: (1, 1),   # 128
+    }
+    # fmt: on
+    offsets = []
+    # Non-diagonal
+    for kgm in [0x02, 0x08, 0x10, 0x40]:
+        if kpt_value & kgm:
+            offsets.append(KPT_GRID_MARKERS[kgm])
+    # Diagonal
+    if kpt_value & 0x01 and not (kpt_value & 0x02 or kpt_value & 0x08):
+        offsets.append(KPT_GRID_MARKERS[0x01])
+    if kpt_value & 0x04 and not (kpt_value & 0x02 or kpt_value & 0x10):
+        offsets.append(KPT_GRID_MARKERS[0x04])
+    if kpt_value & 0x20 and not (kpt_value & 0x08 or kpt_value & 0x40):
+        offsets.append(KPT_GRID_MARKERS[0x20])
+    if kpt_value & 0x80 and not (kpt_value & 0x10 or kpt_value & 0x40):
+        offsets.append(KPT_GRID_MARKERS[0x80])
+
+    return offsets
+
+
 def _get_starting_node(kpts_map, kp_xs, kp_ys, is_closed):
     for x, y in zip(kp_xs, kp_ys):
         if is_closed:
             return x, y
-        elif kpts_map[y, x] not in _get_starting_node.kpts_values:
+        elif len(_get_ngr_node_offsets(kpts_map[y, x])) != 2:
             # Ensure that the point connects to a number of edges that is not equal to 2.
             return x, y
 
@@ -112,7 +127,7 @@ def _get_starting_node(kpts_map, kp_xs, kp_ys, is_closed):
 
 def _get_next_ngr_nodes(kpts_map, curr_node):
     kpt_value = kpts_map[curr_node[1], curr_node[0]]
-    ngr_node_offsets = [v for k, v in KPT_GRID_MARKERS.items() if k & kpt_value]
+    ngr_node_offsets = _get_ngr_node_offsets(kpt_value)
 
     next_ngr_nodes = []
     for nno in ngr_node_offsets:
@@ -135,12 +150,16 @@ def _get_next_ngr_nodes(kpts_map, curr_node):
 
 
 def _get_nodes(kpts_map, kp_xs, kp_ys, closed):
-    nodes = {}  # Key: Node Coordinates, Value: {"value": int, "next": list}
+    # Node Attrs: Key: Node Coordinates, Value: {"value": int, "next": list}
+    nodes = {}
     unvisited_nodes = queue.Queue()
     # DFS
     unvisited_nodes.put(_get_starting_node(kpts_map, kp_xs, kp_ys, closed))
     while not unvisited_nodes.empty():
         curr_node = unvisited_nodes.get()
+        if curr_node in nodes:
+            continue
+
         next_nodes = _get_next_ngr_nodes(kpts_map, curr_node)
         nodes[curr_node] = {
             "value": kpts_map[curr_node[1], curr_node[0]],
@@ -149,15 +168,6 @@ def _get_nodes(kpts_map, kp_xs, kp_ys, closed):
         for nn in next_nodes:
             if nn not in nodes:
                 unvisited_nodes.put(nn)
-
-    # Remove the vertex of right-angle inflection point.
-    # This point should not be regarded as a keypoint.
-    _nodes = nodes.copy()
-    for k, v in _nodes.items():
-        if v["value"] in [10, 18, 72, 80]:
-            del nodes[k]
-    for k, v in nodes.items():
-        v["next"] = [nn for nn in v["next"] if nn in nodes]
 
     return nodes
 
@@ -202,41 +212,7 @@ def _get_ways(nodes, closed):
     return ways
 
 
-def _merge_too_close_way_nodes(nodes, ways, dist_threshold=10):
-    merged_nodes_mapper = {}
-    nodes = list(nodes.keys())
-    n_nodes = len(nodes)
-
-    for i in range(n_nodes):
-        _nodes = [nodes[i]]
-        for j in range(i + 1, n_nodes):
-            if np.linalg.norm(np.array(nodes[i]) - np.array(nodes[j])) < dist_threshold:
-                _nodes.append(nodes[j])
-
-        if len(_nodes) > 1:
-            mean_node = tuple((np.mean(_nodes, axis=0) + 0.5).astype(np.int32))
-            merged_nodes_mapper.update({n: mean_node for n in _nodes})
-
-    for i, way in enumerate(ways):
-        _nodes = []
-        for node in way:
-            if not node in merged_nodes_mapper:
-                # The node is not merged
-                _nodes.append(node)
-            elif len(_nodes) == 0:
-                # The first node is merged
-                _nodes.append(merged_nodes_mapper[node])
-            elif _nodes[-1] != merged_nodes_mapper[node]:
-                # The node is merged and the previous node should not be the same
-                _nodes.append(merged_nodes_mapper[node])
-
-        # Update the way nodes
-        ways[i] = _nodes
-
-    return ways
-
-
-def _simplify_ways(ways, tolerance=12, min_length=MIN_WAY_LENGTH):
+def _simplify_ways(ways, tolerance=12):
     for i, way in enumerate(tqdm(ways, desc="Simplifying ways", leave=False)):
         if len(way) < 2:
             continue
@@ -249,15 +225,15 @@ def _simplify_ways(ways, tolerance=12, min_length=MIN_WAY_LENGTH):
             shape = shapely.simplify(shapely.LineString(way), tolerance=tolerance)
             x, y = shape.coords.xy
 
-        if shape.length >= min_length:
-            ways[i] = np.array([np.array(x), np.array(y)]).T
-        else:
-            ways[i] = None
+        ways[i] = {
+            "closed": is_closed,
+            "nodes": np.array([np.array(x), np.array(y)]).astype(np.int32).T,
+            "length": shape.length,
+        }
+    return ways
 
-    return [w for w in ways if w is not None]
 
-
-def _get_kpts_graph(skeleton, closed=True):
+def _get_kpts_graph(skeleton, closed):
     kpts_map = (
         extensions.keypoint_detector.detect_keypoints(torch.from_numpy(skeleton).cuda())
         .cpu()
@@ -267,32 +243,38 @@ def _get_kpts_graph(skeleton, closed=True):
         skeleton.astype(np.uint8), connectivity=8
     )
 
-    ways = []
+    graphs = []
     for i in tqdm(range(1, n_conn), desc="Pasring connected graphs", leave=False):
         _kpts_map = kpts_map * (conn_map == i)
         kp_ys, kp_xs = np.where(_kpts_map != 0)  # ([ys], [xs])
         _nodes = _get_nodes(_kpts_map, kp_xs, kp_ys, closed)
         _ways = _get_ways(_nodes, closed)
         _ways = _simplify_ways(_ways)
-        ways.append(_ways)
+        graphs.append(_ways)
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
-    # for w in ways:
-    #     for _w in w:
-    #         img = cv2.polylines(img, [np.array(_w).astype(np.int32)], False, 255, 1)
-    return ways
+    # for ways in graphs:
+    #     for way in ways:
+    #         img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
+    # import pdb; pdb.set_trace()
+    return graphs
 
 
 def get_traffic_graphs(traffic_maps):
     traffic_graphs = {}
     for tk, tv in traffic_maps.items():
         traffic_graphs[tk] = {
-            "EDGE": _get_kpts_graph(tv["EDGE"]),
+            "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
             "CNTR": _get_kpts_graph(tv["CNTR"], closed=False),
         }
 
     return traffic_graphs
+
+
+def get_road_widths(road_net, road_centers):
+    dist_map = cv2.distanceTransform(road_net.astype(np.uint8), cv2.DIST_L2, 3)
+    # TODO
 
 
 def main(projection_dir, project_names):
@@ -300,6 +282,10 @@ def main(projection_dir, project_names):
     road_networks = get_road_networks(projection_dir, project_names)
     logging.info("Parsing Traffic Maps ...")
     traffic_maps = get_traffic_maps(road_networks)
+    # # Faster Debug
+    # with open("output/traffic_maps.pkl", "rb") as f:
+    #     # pickle.dump(traffic_maps, f)
+    #     traffic_maps = pickle.load(f)
     logging.info("Parsing Traffic Graphs ...")
     traffic_graphs = get_traffic_graphs(traffic_maps)
 

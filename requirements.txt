@@ -1,11 +1,11 @@
 easydict
 numpy<2.0.0
 opencv-python
+opencv-contrib-python
 pillow
 pynvml
 shapely
 scipy
-scikit-image
 tensorboard
 torch
 torchvision
