@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-09 15:46:57
+# @Last Modified at: 2024-11-11 16:05:43
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -269,11 +269,12 @@ def _get_way_nodes(graphs):
             way_id = len(ways)
             way_nodes = [tuple(n) for n in way["nodes"]]
             end_nodes = [way_nodes[0], way_nodes[-1]]
-            ways[way_id] = {"nodes": way_nodes}
+            ways[way_id] = {"id": way_id, "nodes": way_nodes}
             for en in end_nodes:
                 if en not in nodes:
                     nodes[en] = {"ways": []}
                 nodes[en]["ways"].append(way_id)
+
     return nodes, ways
 
 
@@ -318,7 +319,6 @@ def _merge_way_nodes(graphs, kernel):
     # img = np.zeros((19600, 19600), np.uint8)
     # for way in ways.values():
     #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
-
     return [[v for v in ways.values() if len(v["nodes"]) >= 2]]
 
 
@@ -337,11 +337,150 @@ def _remove_short_orphan_ways(graphs, min_length):
     return [[v for k, v in ways.items() if k not in ways_to_remove]]
 
 
+def _get_next_way_node(way_nodes, curr_node, n_step):
+    N_DENSIFIED_NODES = 5
+    assert way_nodes[0] == curr_node or way_nodes[-1] == curr_node
+    # Densify the way nodes if only two nodes exist in the way
+    if len(way_nodes) == 2:
+        end_nodes = way_nodes
+        way_nodes = [
+            tuple(
+                (
+                    np.array(end_nodes[0]) * i / N_DENSIFIED_NODES
+                    + np.array(end_nodes[1])
+                    * (N_DENSIFIED_NODES - i)
+                    / N_DENSIFIED_NODES
+                ).astype(np.int32)
+            )
+            for i in range(N_DENSIFIED_NODES)
+        ]
+
+    if way_nodes[0] == curr_node:
+        return way_nodes[n_step] if n_step < len(way_nodes) else None
+    else:
+        return way_nodes[-n_step - 1] if n_step < len(way_nodes) else None
+
+
+def _get_intersection_point(pt0, pt1, pt2):
+    if pt0[0] == pt1[0]:
+        return (pt0[0], pt2[1])
+    elif pt0[1] == pt1[1]:
+        return (pt2[0], pt0[1])
+
+    # The line equation of the line connecting pt0 and pt1
+    k0 = (pt1[1] - pt0[1]) / (pt1[0] - pt0[0])
+    b0 = pt0[1] - k0 * pt0[0]
+    # The line perpendicular to the line connecting pt0 and pt1
+    k1 = -1 / k0
+    b1 = pt2[1] - k1 * pt2[0]
+    # The intersection point
+    x = (b1 - b0) / (k0 - k1)
+    y = k0 * x + b0
+
+    return (int(x + 0.5), int(y + 0.5))
+
+
+def _insert_node_after(anchor_node, new_node, way_nodes):
+    assert way_nodes[0] == anchor_node or way_nodes[-1] == anchor_node
+    # No need to insert if the new node is the same as the anchor node
+    if new_node == anchor_node:
+        return way_nodes
+
+    if way_nodes[0] == anchor_node:
+        way_nodes.insert(0, new_node)
+    else:
+        way_nodes.append(new_node)
+
+    return way_nodes
+
+
+def _get_fixed_triangle_intersection(curr_node, connected_ways, max_angle):
+    assert len(connected_ways) == 3
+
+    choices = [(0, 1, 2), (0, 2, 1), (1, 2, 0)]
+    nodes_1st = [_get_next_way_node(cw["nodes"], curr_node, 1) for cw in connected_ways]
+    nodes_2nd = [_get_next_way_node(cw["nodes"], curr_node, 2) for cw in connected_ways]
+    # Skip if any of the nodes is None
+    if any(n is None for n in nodes_1st) or any(n is None for n in nodes_2nd):
+        return None
+
+    nodes_1st = np.array([np.array(n) for n in nodes_1st])
+    nodes_2nd = np.array([np.array(n) for n in nodes_2nd])
+    best_choice = None
+    best_choice_angle = max_angle
+    for c in choices:
+        idx0, idx1 = c[0], c[1]
+        vec_0a = nodes_2nd[idx0] - nodes_1st[idx0]
+        vec_0b = nodes_1st[idx0] - nodes_1st[idx1]
+        angle0 = np.degrees(
+            np.arccos(
+                np.clip(
+                    np.dot(vec_0a, vec_0b)
+                    / (np.linalg.norm(vec_0a) * np.linalg.norm(vec_0b)),
+                    -1,
+                    1,
+                )
+            )
+        )
+        vec_1a = nodes_2nd[idx1] - nodes_1st[idx1]
+        vec_1b = nodes_1st[idx1] - nodes_1st[idx0]
+        angle1 = np.degrees(
+            np.arccos(
+                np.clip(
+                    np.dot(vec_1a, vec_1b)
+                    / (np.linalg.norm(vec_1a) * np.linalg.norm(vec_1b)),
+                    -1,
+                    1,
+                )
+            )
+        )
+        # Calculate the new intersection point
+        if angle0 + angle1 < best_choice_angle:
+            best_choice = c
+            best_choice_angle = angle0 + angle1
+
+    if best_choice is None:
+        return None, None
+
+    return connected_ways[best_choice[2]]["id"], _get_intersection_point(
+        nodes_1st[best_choice[0]],
+        nodes_1st[best_choice[1]],
+        curr_node,
+    )
+
+
+def _fix_triangle_intersections(graphs, max_angle):
+    nodes, ways = _get_way_nodes(graphs)
+    for k, v in nodes.items():
+        if len(v["ways"]) != 3:
+            continue
+
+        connected_ways = [ways[cw] for cw in v["ways"]]
+        perpendicular_way, fixed_coord = _get_fixed_triangle_intersection(
+            k, connected_ways, max_angle
+        )
+        # Skip if the intersection if the fixed condition is not met
+        if fixed_coord is None:
+            continue
+
+        # Replace the fixed coordinates in the ways
+        for cw in v["ways"]:
+            way_nodes = ways[cw]["nodes"]
+            if cw != perpendicular_way:
+                for i, wn in enumerate(way_nodes):
+                    if wn == k:
+                        way_nodes[i] = fixed_coord
+            else:
+                ways[cw]["nodes"] = _insert_node_after(k, fixed_coord, way_nodes)
+
+    return [[v for v in ways.values() if len(v["nodes"]) >= 2]]
+
+
 def get_traffic_graphs(traffic_maps):
     traffic_graphs = {}
     for tk, tv in traffic_maps.items():
         traffic_graphs[tk] = {
-            "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
+            # "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
             "CNTR": _get_kpts_graph(tv["CNTR"], closed=False),
         }
         # Post-processing for the road centerlines
@@ -350,6 +489,9 @@ def get_traffic_graphs(traffic_maps):
         )
         traffic_graphs[tk]["CNTR"] = _remove_short_orphan_ways(
             traffic_graphs[tk]["CNTR"], min_length=128
+        )
+        traffic_graphs[tk]["CNTR"] = _fix_triangle_intersections(
+            traffic_graphs[tk]["CNTR"], max_angle=25
         )
         # Debug: Visualization
         # img = np.zeros((19600, 19600), np.uint8)
@@ -365,14 +507,14 @@ def get_road_widths(road_net, road_centers):
 
 
 def main(projection_dir, project_names):
-    logging.info("Parsing Road Networks ...")
-    road_networks = get_road_networks(projection_dir, project_names)
-    logging.info("Parsing Traffic Maps ...")
-    traffic_maps = get_traffic_maps(road_networks)
+    # logging.info("Parsing Road Networks ...")
+    # road_networks = get_road_networks(projection_dir, project_names)
+    # logging.info("Parsing Traffic Maps ...")
+    # traffic_maps = get_traffic_maps(road_networks)
     # Faster Debug
-    # with open("output/traffic_maps.pkl", "rb") as f:
-    #     # pickle.dump(traffic_maps, f)
-    #     traffic_maps = pickle.load(f)
+    with open("output/traffic_maps.pkl", "rb") as f:
+        # pickle.dump(traffic_maps, f)
+        traffic_maps = pickle.load(f)
     logging.info("Parsing Traffic Graphs ...")
     traffic_graphs = get_traffic_graphs(traffic_maps)
 
