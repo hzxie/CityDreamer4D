@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-11 16:05:43
+# @Last Modified at: 2024-11-11 21:15:15
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -226,9 +226,7 @@ def _simplify_ways(ways, tolerance=12):
             x, y = shape.coords.xy
 
         ways[i] = {
-            "closed": is_closed,
             "nodes": np.array([np.array(x), np.array(y)]).astype(np.int32).T,
-            "length": shape.length,
         }
     return ways
 
@@ -276,6 +274,83 @@ def _get_way_nodes(graphs):
                 nodes[en]["ways"].append(way_id)
 
     return nodes, ways
+
+
+def _get_way_length(way_nodes):
+    length = 0
+    for i in range(1, len(way_nodes)):
+        length += np.linalg.norm(np.array(way_nodes[i]) - np.array(way_nodes[i - 1]))
+
+    return length
+
+
+def _connect_ways(ways, ways_to_connect):
+    assert len(ways_to_connect) <= 3
+
+    for shared_way, wc in ways_to_connect:
+        way_nodes = [*ways[shared_way]["nodes"]]
+        _ways = list(wc)
+        for w in _ways:
+            if w == shared_way:
+                continue
+            if way_nodes[0] == ways[w]["nodes"][0]:
+                way_nodes = list(reversed(ways[w]["nodes"][1:])) + way_nodes
+            elif way_nodes[0] == ways[w]["nodes"][-1]:
+                way_nodes = ways[w]["nodes"] + way_nodes[1:]
+            elif way_nodes[-1] == ways[w]["nodes"][0]:
+                way_nodes = way_nodes + ways[w]["nodes"][1:]
+            elif way_nodes[-1] == ways[w]["nodes"][-1]:
+                way_nodes = way_nodes + list(reversed(ways[w]["nodes"][:-1]))
+            else:
+                raise ValueError(
+                    "The shared way is not connected to the way to connect."
+                )
+            # Remove the original way
+            del ways[w]
+        # Update the way nodes of the shared way
+        ways[shared_way]["nodes"] = way_nodes
+
+    return ways
+
+
+def _remove_short_loops(graphs):
+    nodes, ways = _get_way_nodes(graphs)
+    endnodes = {}
+    # Check if there are two ways that share the same end nodes.
+    for k, v in ways.items():
+        _end_nodes = (v["nodes"][0], v["nodes"][-1])
+        if _end_nodes not in endnodes:
+            endnodes[_end_nodes] = []
+        endnodes[_end_nodes].append(k)
+
+    ways_to_remove = []
+    ways_to_connect = []
+    for _endnodes, _ways in endnodes.items():
+        if len(_ways) < 2:
+            continue
+
+        way_length = {w: _get_way_length(ways[w]["nodes"]) for w in _ways}
+        shortest_way = min(way_length, key=way_length.get)
+        ways_to_remove.extend([w for w in _ways if w != shortest_way])
+        # Connect the rest of the ways connected to the shortest way
+        ways_to_connect.append(
+            (
+                shortest_way,
+                set(
+                    [
+                        w
+                        for w in nodes[_endnodes[0]]["ways"]
+                        + nodes[_endnodes[1]]["ways"]
+                        if w not in ways_to_remove
+                    ]
+                ),
+            )
+        )
+
+    ways = _connect_ways(
+        {k: v for k, v in ways.items() if k not in ways_to_remove}, ways_to_connect
+    )
+    return [list(ways.values())]
 
 
 def _merge_way_nodes(graphs, kernel):
@@ -462,7 +537,6 @@ def _fix_triangle_intersections(graphs, max_angle):
         # Skip if the intersection if the fixed condition is not met
         if fixed_coord is None:
             continue
-
         # Replace the fixed coordinates in the ways
         for cw in v["ways"]:
             way_nodes = ways[cw]["nodes"]
@@ -484,6 +558,7 @@ def get_traffic_graphs(traffic_maps):
             "CNTR": _get_kpts_graph(tv["CNTR"], closed=False),
         }
         # Post-processing for the road centerlines
+        traffic_graphs[tk]["CNTR"] = _remove_short_loops(traffic_graphs[tk]["CNTR"])
         traffic_graphs[tk]["CNTR"] = _merge_way_nodes(
             traffic_graphs[tk]["CNTR"], kernel=31
         )
@@ -507,14 +582,14 @@ def get_road_widths(road_net, road_centers):
 
 
 def main(projection_dir, project_names):
-    # logging.info("Parsing Road Networks ...")
-    # road_networks = get_road_networks(projection_dir, project_names)
-    # logging.info("Parsing Traffic Maps ...")
-    # traffic_maps = get_traffic_maps(road_networks)
-    # Faster Debug
-    with open("output/traffic_maps.pkl", "rb") as f:
-        # pickle.dump(traffic_maps, f)
-        traffic_maps = pickle.load(f)
+    logging.info("Parsing Road Networks ...")
+    road_networks = get_road_networks(projection_dir, project_names)
+    logging.info("Parsing Traffic Maps ...")
+    traffic_maps = get_traffic_maps(road_networks)
+    # # Faster Debug
+    # with open("output/traffic_maps.pkl", "rb") as f:
+    #     # pickle.dump(traffic_maps, f)
+    #     traffic_maps = pickle.load(f)
     logging.info("Parsing Traffic Graphs ...")
     traffic_graphs = get_traffic_graphs(traffic_maps)
 
