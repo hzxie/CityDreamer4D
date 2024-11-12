@@ -4,11 +4,12 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-11 21:15:15
+# @Last Modified at: 2024-11-12 16:49:58
 # @Email:  root@haozhexie.com
 
 import argparse
 import cv2
+import json
 import logging
 import numpy as np
 import os
@@ -209,25 +210,31 @@ def _get_ways(nodes, closed):
             for nn in nodes[node_next]["next"]:
                 unvisited_edges.put((node_next, nn))
 
-    return ways
+    return [{"nodes": way} for way in ways]
 
 
-def _simplify_ways(ways, tolerance=12):
-    for i, way in enumerate(tqdm(ways, desc="Simplifying ways", leave=False)):
-        if len(way) < 2:
+def _simplify_ways(_ways, tolerance=12):
+    ways = []
+    for way in tqdm(_ways, desc="Simplifying ways", leave=False):
+        way_nodes = way["nodes"]
+        is_closed = way_nodes[0] == way_nodes[-1]
+        if len(set(way_nodes)) == 1:
+            continue
+        elif is_closed and len(set(way_nodes)) <= 2:
             continue
 
-        is_closed = way[0] == way[-1]
         if is_closed:
-            shape = shapely.simplify(shapely.Polygon(way), tolerance=tolerance)
+            shape = shapely.simplify(shapely.Polygon(way_nodes), tolerance=tolerance)
             x, y = shape.exterior.coords.xy
         else:
-            shape = shapely.simplify(shapely.LineString(way), tolerance=tolerance)
+            shape = shapely.simplify(shapely.LineString(way_nodes), tolerance=tolerance)
             x, y = shape.coords.xy
 
-        ways[i] = {
-            "nodes": np.array([np.array(x), np.array(y)]).astype(np.int32).T,
-        }
+        ways.append(
+            {
+                "nodes": np.array([np.array(x), np.array(y)]).astype(np.int32).T,
+            }
+        )
     return ways
 
 
@@ -241,37 +248,35 @@ def _get_kpts_graph(skeleton, closed):
         skeleton.astype(np.uint8), connectivity=8
     )
 
-    graphs = []
+    ways = []
     for i in tqdm(range(1, n_conn), desc="Pasring connected graphs", leave=False):
         _kpts_map = kpts_map * (conn_map == i)
         kp_ys, kp_xs = np.where(_kpts_map != 0)  # ([ys], [xs])
         _nodes = _get_nodes(_kpts_map, kp_xs, kp_ys, closed)
         _ways = _get_ways(_nodes, closed)
         _ways = _simplify_ways(_ways)
-        graphs.append(_ways)
+        ways.extend(_ways)
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
-    # for ways in graphs:
-    #     for way in ways:
-    #         img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
-    return graphs
+    # for way in ways:
+    #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
+    return ways
 
 
-def _get_way_nodes(graphs):
+def _get_way_nodes(_ways):
     nodes = {}
     ways = {}
     # Organzing connectivity
-    for graph in graphs:
-        for way in graph:
-            way_id = len(ways)
-            way_nodes = [tuple(n) for n in way["nodes"]]
-            end_nodes = [way_nodes[0], way_nodes[-1]]
-            ways[way_id] = {"id": way_id, "nodes": way_nodes}
-            for en in end_nodes:
-                if en not in nodes:
-                    nodes[en] = {"ways": []}
-                nodes[en]["ways"].append(way_id)
+    for way in _ways:
+        way_id = len(ways)
+        way_nodes = [tuple(n) for n in way["nodes"]]
+        end_nodes = [way_nodes[0], way_nodes[-1]]
+        ways[way_id] = {"id": way_id, "nodes": way_nodes}
+        for en in end_nodes:
+            if en not in nodes:
+                nodes[en] = {"ways": []}
+            nodes[en]["ways"].append(way_id)
 
     return nodes, ways
 
@@ -313,8 +318,8 @@ def _connect_ways(ways, ways_to_connect):
     return ways
 
 
-def _remove_short_loops(graphs):
-    nodes, ways = _get_way_nodes(graphs)
+def _remove_short_loops(ways):
+    nodes, ways = _get_way_nodes(ways)
     endnodes = {}
     # Check if there are two ways that share the same end nodes.
     for k, v in ways.items():
@@ -350,12 +355,27 @@ def _remove_short_loops(graphs):
     ways = _connect_ways(
         {k: v for k, v in ways.items() if k not in ways_to_remove}, ways_to_connect
     )
-    return [list(ways.values())]
+    return list(ways.values())
 
 
-def _merge_way_nodes(graphs, kernel):
+def _get_mean_intersection_coord(intersections, **_):
+    return (np.array(intersections).mean(axis=0) + 0.5).astype(np.int32)
+
+
+def _get_nearby_nodes(curr_node, kernel, nodes):
+    ngr_nodes = []
+    for ox in range(-kernel, kernel + 1):
+        for oy in range(-kernel, kernel + 1):
+            ngr_nd_key = (curr_node[0] + ox, curr_node[1] + oy)
+            if ngr_nd_key in nodes:
+                ngr_nodes.append(ngr_nd_key)
+
+    return ngr_nodes
+
+
+def _merge_nearby_intersections(ways, kernel, new_cord_callback):
     clusters = {}
-    nodes, ways = _get_way_nodes(graphs)
+    nodes, ways = _get_way_nodes(ways)
     # Find neighboring nodes
     half_kernel = kernel // 2
     for k, v in nodes.items():
@@ -363,13 +383,7 @@ def _merge_way_nodes(graphs, kernel):
             continue
 
         cluster_id = len(clusters)
-        ngr_interxns = []
-        for ox in range(-half_kernel, half_kernel + 1):
-            for oy in range(-half_kernel, half_kernel + 1):
-                ngr_nd_key = (k[0] + ox, k[1] + oy)
-                if ngr_nd_key in nodes:
-                    ngr_interxns.append(ngr_nd_key)
-
+        ngr_interxns = _get_nearby_nodes(k, half_kernel, nodes)
         if len(ngr_interxns) > 1:
             clusters[cluster_id] = ngr_interxns
             for ni in ngr_interxns:
@@ -377,7 +391,7 @@ def _merge_way_nodes(graphs, kernel):
 
     # Replace way nodes
     for cv in clusters.values():
-        mean_cord = (np.array(cv).mean(axis=0) + 0.5).astype(np.int32)
+        mean_cord = new_cord_callback(cv, nodes=nodes, ways=ways)
         for cn in cv:
             for w in nodes[cn]["ways"]:
                 way_nodes = ways[w]["nodes"]
@@ -394,11 +408,11 @@ def _merge_way_nodes(graphs, kernel):
     # img = np.zeros((19600, 19600), np.uint8)
     # for way in ways.values():
     #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
-    return [[v for v in ways.values() if len(v["nodes"]) >= 2]]
+    return [v for v in ways.values() if len(v["nodes"]) >= 2]
 
 
-def _remove_short_orphan_ways(graphs, min_length):
-    nodes, ways = _get_way_nodes(graphs)
+def _remove_short_orphan_ways(ways, min_length):
+    nodes, ways = _get_way_nodes(ways)
     ways_to_remove = []
     for k, v in ways.items():
         if len(v["nodes"]) > min_length:
@@ -409,7 +423,7 @@ def _remove_short_orphan_ways(graphs, min_length):
             if len(nodes[en]["ways"]) < 2:
                 ways_to_remove.append(k)
 
-    return [[v for k, v in ways.items() if k not in ways_to_remove]]
+    return [v for k, v in ways.items() if k not in ways_to_remove]
 
 
 def _get_next_way_node(way_nodes, curr_node, n_step):
@@ -471,7 +485,6 @@ def _insert_node_after(anchor_node, new_node, way_nodes):
 
 def _get_fixed_triangle_intersection(curr_node, connected_ways, max_angle):
     assert len(connected_ways) == 3
-
     choices = [(0, 1, 2), (0, 2, 1), (1, 2, 0)]
     nodes_1st = [_get_next_way_node(cw["nodes"], curr_node, 1) for cw in connected_ways]
     nodes_2nd = [_get_next_way_node(cw["nodes"], curr_node, 2) for cw in connected_ways]
@@ -515,52 +528,72 @@ def _get_fixed_triangle_intersection(curr_node, connected_ways, max_angle):
             best_choice_angle = angle0 + angle1
 
     if best_choice is None:
-        return None, None
+        return None
 
-    return connected_ways[best_choice[2]]["id"], _get_intersection_point(
+    return _get_intersection_point(
         nodes_1st[best_choice[0]],
         nodes_1st[best_choice[1]],
         curr_node,
     )
 
 
-def _fix_triangle_intersections(graphs, max_angle):
-    nodes, ways = _get_way_nodes(graphs)
+def _fix_triangle_intersections(ways, max_angle):
+    nodes, ways = _get_way_nodes(ways)
     for k, v in nodes.items():
         if len(v["ways"]) != 3:
             continue
 
         connected_ways = [ways[cw] for cw in v["ways"]]
-        perpendicular_way, fixed_coord = _get_fixed_triangle_intersection(
-            k, connected_ways, max_angle
-        )
+        fixed_coord = _get_fixed_triangle_intersection(k, connected_ways, max_angle)
         # Skip if the intersection if the fixed condition is not met
         if fixed_coord is None:
             continue
         # Replace the fixed coordinates in the ways
         for cw in v["ways"]:
             way_nodes = ways[cw]["nodes"]
-            if cw != perpendicular_way:
+            for i, wn in enumerate(way_nodes):
+                if wn == k:
+                    way_nodes[i] = fixed_coord
+
+    return [v for v in ways.values() if len(v["nodes"]) >= 2]
+
+
+def _manually_fix_intersections(ways, intersections):
+    nodes, ways = _get_way_nodes(ways)
+    interxns = {k: v for k, v in nodes.items() if len(v["ways"]) > 2}
+    for interxn in intersections:
+        ngr_interxns = _get_nearby_nodes(interxn["node"], interxn["kernel"], nodes)
+        for ni in ngr_interxns:
+            for w in nodes[ni]["ways"]:
+                way_nodes = ways[w]["nodes"]
                 for i, wn in enumerate(way_nodes):
-                    if wn == k:
-                        way_nodes[i] = fixed_coord
-            else:
-                ways[cw]["nodes"] = _insert_node_after(k, fixed_coord, way_nodes)
+                    interxn_dist = np.linalg.norm(
+                        np.array(way_nodes[i]) - np.array(interxn["node"])
+                    )
+                    if wn == ni or interxn_dist < interxn["kernel"]:
+                        way_nodes[i] = tuple(interxn["node"])
+            # Remove duplicated nodes in the way
+            ways[w]["nodes"] = []
+            for i in range(len(way_nodes)):
+                if i == 0 or way_nodes[i] != way_nodes[i - 1]:
+                    ways[w]["nodes"].append(way_nodes[i])
 
-    return [[v for v in ways.values() if len(v["nodes"]) >= 2]]
+    return [v for v in ways.values() if len(v["nodes"]) >= 2]
 
 
-def get_traffic_graphs(traffic_maps):
+def get_traffic_graphs(traffic_maps, manual_fixer):
     traffic_graphs = {}
     for tk, tv in traffic_maps.items():
         traffic_graphs[tk] = {
-            # "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
+            "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
             "CNTR": _get_kpts_graph(tv["CNTR"], closed=False),
         }
         # Post-processing for the road centerlines
         traffic_graphs[tk]["CNTR"] = _remove_short_loops(traffic_graphs[tk]["CNTR"])
-        traffic_graphs[tk]["CNTR"] = _merge_way_nodes(
-            traffic_graphs[tk]["CNTR"], kernel=31
+        traffic_graphs[tk]["CNTR"] = _merge_nearby_intersections(
+            traffic_graphs[tk]["CNTR"],
+            kernel=31,
+            new_cord_callback=_get_mean_intersection_coord,
         )
         traffic_graphs[tk]["CNTR"] = _remove_short_orphan_ways(
             traffic_graphs[tk]["CNTR"], min_length=128
@@ -568,9 +601,14 @@ def get_traffic_graphs(traffic_maps):
         traffic_graphs[tk]["CNTR"] = _fix_triangle_intersections(
             traffic_graphs[tk]["CNTR"], max_angle=25
         )
+        if manual_fixer is not None:
+            traffic_graphs[tk]["CNTR"] = _manually_fix_intersections(
+                traffic_graphs[tk]["CNTR"], manual_fixer[tk]["intersections"]
+            )
+        traffic_graphs[tk]["CNTR"] = _simplify_ways(traffic_graphs[tk]["CNTR"])
         # Debug: Visualization
         # img = np.zeros((19600, 19600), np.uint8)
-        # for way in traffic_graphs[tk]["CNTR"][0]:
+        # for way in traffic_graphs[tk]["CNTR"]:
         #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
 
     return traffic_graphs
@@ -581,17 +619,22 @@ def get_road_widths(road_net, road_centers):
     # TODO
 
 
-def main(projection_dir, project_names):
+def main(projection_dir, manual_fix_file, project_names):
     logging.info("Parsing Road Networks ...")
     road_networks = get_road_networks(projection_dir, project_names)
     logging.info("Parsing Traffic Maps ...")
     traffic_maps = get_traffic_maps(road_networks)
-    # # Faster Debug
+    # Faster Debug
     # with open("output/traffic_maps.pkl", "rb") as f:
     #     # pickle.dump(traffic_maps, f)
     #     traffic_maps = pickle.load(f)
+
     logging.info("Parsing Traffic Graphs ...")
-    traffic_graphs = get_traffic_graphs(traffic_maps)
+    manual_fixer = None
+    if os.path.exists(manual_fix_file):
+        manual_fixer = json.loads(open(manual_fix_file, "r").read())
+
+    traffic_graphs = get_traffic_graphs(traffic_maps, manual_fixer)
 
 
 if __name__ == "__main__":
@@ -606,9 +649,16 @@ if __name__ == "__main__":
             PROJECT_HOME, "data", "city-sample", "City01", "Projections"
         ),
     )
+    parser.add_argument(
+        "--manual_fix_file",
+        default=os.path.join(
+            PROJECT_HOME, "data", "city-sample", "City01", "TrafficFix.json"
+        ),
+    )
     parser.add_argument("--project_names", default="REST, FREEWAY")
     args = parser.parse_args()
     main(
         args.projection_dir,
+        args.manual_fix_file,
         [pn.strip() for pn in args.project_names.split(",")],
     )
