@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-12 16:49:58
+# @Last Modified at: 2024-11-15 13:19:57
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -46,15 +46,14 @@ def get_road_networks(projection_dir, project_names):
         for pn in project_names
     }
     for k, v in projections.items():
+        assert k in ["REST", "FREEWAY"]
         v[v != classes["ROAD"]] = classes["NULL"]
-        # v = cv2.dilate(v.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=2)
-        # projections[k] = cv2.erode(v, np.ones((5, 5), np.uint8), iterations=2)
-        v = scipy.ndimage.gaussian_filter(v * 255, sigma=5)
+        v = scipy.ndimage.gaussian_filter(v * 255, sigma=7)
         projections[k] = (v >= 128).astype(np.uint8)
 
     # Debug: Visualization
     # import utils.helpers
-    # utils.helpers.get_seg_map(projections["REST"]).save("output/test.png")
+    # utils.helpers.get_seg_map(projections["FREEWAY"]).save("output/test.png")
     return projections
 
 
@@ -290,7 +289,9 @@ def _get_way_length(way_nodes):
 
 
 def _connect_ways(ways, ways_to_connect):
-    assert len(ways_to_connect) <= 3
+    if len(ways_to_connect) > 3:
+        logging.warning("Too many ways to connect: %s" % ways_to_connect)
+        return ways
 
     for shared_way, wc in ways_to_connect:
         way_nodes = [*ways[shared_way]["nodes"]]
@@ -415,7 +416,7 @@ def _remove_short_orphan_ways(ways, min_length):
     nodes, ways = _get_way_nodes(ways)
     ways_to_remove = []
     for k, v in ways.items():
-        if len(v["nodes"]) > min_length:
+        if _get_way_length(v["nodes"]) > min_length:
             continue
 
         end_nodes = [v["nodes"][0], v["nodes"][-1]]
@@ -450,37 +451,55 @@ def _get_next_way_node(way_nodes, curr_node, n_step):
         return way_nodes[-n_step - 1] if n_step < len(way_nodes) else None
 
 
-def _get_intersection_point(pt0, pt1, pt2):
+def _get_line_equation(pt0, pt1):
     if pt0[0] == pt1[0]:
-        return (pt0[0], pt2[1])
-    elif pt0[1] == pt1[1]:
-        return (pt2[0], pt0[1])
+        return None, pt0[0]
 
-    # The line equation of the line connecting pt0 and pt1
-    k0 = (pt1[1] - pt0[1]) / (pt1[0] - pt0[0])
-    b0 = pt0[1] - k0 * pt0[0]
-    # The line perpendicular to the line connecting pt0 and pt1
-    k1 = -1 / k0
-    b1 = pt2[1] - k1 * pt2[0]
-    # The intersection point
+    k = (pt1[1] - pt0[1]) / (pt1[0] - pt0[0])
+    b = pt0[1] - k * pt0[0]
+    return k, b
+
+
+def _get_intersection_point(line0, line1):
+    k0, b0 = line0
+    k1, b1 = line1
+    if k0 == k1:
+        return None
+    elif k0 is None:
+        return (b0, k1 * b0 + b1)
+    elif k1 is None:
+        return (b1, k0 * b1 + b0)
+
     x = (b1 - b0) / (k0 - k1)
     y = k0 * x + b0
-
     return (int(x + 0.5), int(y + 0.5))
 
 
-def _insert_node_after(anchor_node, new_node, way_nodes):
-    assert way_nodes[0] == anchor_node or way_nodes[-1] == anchor_node
-    # No need to insert if the new node is the same as the anchor node
-    if new_node == anchor_node:
-        return way_nodes
+def _get_perpendicular_intersection_point(pt0, pt1, pt2):
+    # The line equation of the line connecting pt0 and pt1
+    k0, b0 = _get_line_equation(pt0, pt1)
+    # The line perpendicular to the line connecting pt0 and pt1
+    k1 = 0 if k0 is None else (-1 / k0 if k0 != 0 else None)
+    b1 = pt2[1] - k1 * pt2[0] if k1 is not None else pt2[0]
+    # The intersection point
+    return _get_intersection_point((k0, b0), (k1, b1))
 
-    if way_nodes[0] == anchor_node:
-        way_nodes.insert(0, new_node)
-    else:
-        way_nodes.append(new_node)
 
-    return way_nodes
+def _get_vector(node0, node1):
+    return np.array(node0) - np.array(node1)
+
+
+def _get_vector_angle(vec0, vec1):
+    angle = np.degrees(
+        np.arccos(
+            np.clip(
+                np.dot(vec0, vec1) / (np.linalg.norm(vec0) * np.linalg.norm(vec1)),
+                -1,
+                1,
+            )
+        )
+    )
+    return angle
 
 
 def _get_fixed_triangle_intersection(curr_node, connected_ways, max_angle):
@@ -492,35 +511,17 @@ def _get_fixed_triangle_intersection(curr_node, connected_ways, max_angle):
     if any(n is None for n in nodes_1st) or any(n is None for n in nodes_2nd):
         return None
 
-    nodes_1st = np.array([np.array(n) for n in nodes_1st])
-    nodes_2nd = np.array([np.array(n) for n in nodes_2nd])
     best_choice = None
     best_choice_angle = max_angle
     for c in choices:
         idx0, idx1 = c[0], c[1]
-        vec_0a = nodes_2nd[idx0] - nodes_1st[idx0]
-        vec_0b = nodes_1st[idx0] - nodes_1st[idx1]
-        angle0 = np.degrees(
-            np.arccos(
-                np.clip(
-                    np.dot(vec_0a, vec_0b)
-                    / (np.linalg.norm(vec_0a) * np.linalg.norm(vec_0b)),
-                    -1,
-                    1,
-                )
-            )
+        angle0 = _get_vector_angle(
+            _get_vector(nodes_2nd[idx0], nodes_1st[idx0]),
+            _get_vector(nodes_1st[idx0], nodes_1st[idx1]),
         )
-        vec_1a = nodes_2nd[idx1] - nodes_1st[idx1]
-        vec_1b = nodes_1st[idx1] - nodes_1st[idx0]
-        angle1 = np.degrees(
-            np.arccos(
-                np.clip(
-                    np.dot(vec_1a, vec_1b)
-                    / (np.linalg.norm(vec_1a) * np.linalg.norm(vec_1b)),
-                    -1,
-                    1,
-                )
-            )
+        angle1 = _get_vector_angle(
+            _get_vector(nodes_2nd[idx1], nodes_1st[idx1]),
+            _get_vector(nodes_1st[idx1], nodes_1st[idx0]),
         )
         # Calculate the new intersection point
         if angle0 + angle1 < best_choice_angle:
@@ -530,7 +531,7 @@ def _get_fixed_triangle_intersection(curr_node, connected_ways, max_angle):
     if best_choice is None:
         return None
 
-    return _get_intersection_point(
+    return _get_perpendicular_intersection_point(
         nodes_1st[best_choice[0]],
         nodes_1st[best_choice[1]],
         curr_node,
@@ -562,7 +563,7 @@ def _manually_fix_intersections(ways, intersections):
     nodes, ways = _get_way_nodes(ways)
     interxns = {k: v for k, v in nodes.items() if len(v["ways"]) > 2}
     for interxn in intersections:
-        ngr_interxns = _get_nearby_nodes(interxn["node"], interxn["kernel"], nodes)
+        ngr_interxns = _get_nearby_nodes(interxn["node"], interxn["kernel"], interxns)
         for ni in ngr_interxns:
             for w in nodes[ni]["ways"]:
                 way_nodes = ways[w]["nodes"]
@@ -579,6 +580,119 @@ def _manually_fix_intersections(ways, intersections):
                     ways[w]["nodes"].append(way_nodes[i])
 
     return [v for v in ways.values() if len(v["nodes"]) >= 2]
+
+
+def is_intersection_within_segment(interxn, seg0, seg1):
+    min_x0 = min(seg0[0][0], seg0[1][0])
+    max_x0 = max(seg0[0][0], seg0[1][0])
+    min_y0 = min(seg0[0][1], seg0[1][1])
+    max_y0 = max(seg0[0][1], seg0[1][1])
+    min_x1 = min(seg1[0][0], seg1[1][0])
+    max_x1 = max(seg1[0][0], seg1[1][0])
+    min_y1 = min(seg1[0][1], seg1[1][1])
+    max_y1 = max(seg1[0][1], seg1[1][1])
+    return (
+        interxn[0] >= min_x0
+        and interxn[0] <= max_x0
+        and interxn[1] >= min_y0
+        and interxn[1] <= max_y0
+        and interxn[0] >= min_x1
+        and interxn[0] <= max_x1
+        and interxn[1] >= min_y1
+        and interxn[1] <= max_y1
+    )
+
+
+def _get_freeway_intersections(freeway_entry, way_nodes):
+    entry_line = _get_line_equation(freeway_entry[0], freeway_entry[1])
+    for i in range(1, len(way_nodes)):
+        interxn = _get_intersection_point(
+            _get_line_equation(way_nodes[i - 1], way_nodes[i]), entry_line
+        )
+        if interxn is None:
+            continue
+        # Check if the intersection is within the freeway_entry line segment
+        if is_intersection_within_segment(
+            interxn, freeway_entry, (way_nodes[i - 1], way_nodes[i])
+        ):
+            return interxn, way_nodes[i - 1]
+
+    return None, None
+
+
+def _get_attached_way(freeway_entry, road_interxns, road_ways):
+    min_dist = float("inf")
+    min_dist_interxn = None
+    # Find the nearest intersection
+    for ri in road_interxns.keys():
+        dist = np.linalg.norm(np.array(ri) - np.array(freeway_entry[0]))
+        if dist < min_dist:
+            min_dist = dist
+            min_dist_interxn = ri
+
+    # Find the attached way
+    attached_way = None
+    candidate_ways = road_interxns[min_dist_interxn]["ways"]
+    for cw in candidate_ways:
+        assert (
+            road_ways[cw]["nodes"][0] == min_dist_interxn
+            or road_ways[cw]["nodes"][-1] == min_dist_interxn
+        )
+        if road_ways[cw]["nodes"][-1] == min_dist_interxn:
+            road_ways[cw]["nodes"] = list(reversed(road_ways[cw]["nodes"]))
+
+        freeway_interxn, anchor_way_node = _get_freeway_intersections(
+            freeway_entry, road_ways[cw]["nodes"]
+        )
+        if freeway_interxn is not None:
+            attached_way = cw
+            return (attached_way, freeway_interxn, anchor_way_node)
+
+    return None
+
+
+def _insert_node_after(anchor_node, new_node, way_nodes):
+    assert anchor_node in way_nodes
+    # No need to insert if the new node is the same as the anchor node
+    if new_node == anchor_node:
+        return way_nodes
+
+    anchor_idx = way_nodes.index(anchor_node)
+    way_nodes.insert(anchor_idx + 1, new_node)
+    return way_nodes
+
+
+def _attach_freeways_and_roads(freeways, roads):
+    free_nodes, free_ways = _get_way_nodes(freeways)
+    road_nodes, road_ways = _get_way_nodes(roads)
+    road_interxns = {k: v for k, v in road_nodes.items() if len(v["ways"]) > 2}
+
+    freeway_entries = [k for k, v in free_nodes.items() if len(v["ways"]) == 1]
+    for fe in freeway_entries:
+        freeway_id = free_nodes[fe]["ways"][0]
+        entry_next = _get_next_way_node(free_ways[freeway_id]["nodes"], fe, 1)
+        attached_way, freeway_interxn, anchor_way_node = _get_attached_way(
+            (fe, entry_next), road_interxns, road_ways
+        )
+        # Add intersection to the attached way nodes
+        road_ways[attached_way]["nodes"] = _insert_node_after(
+            anchor_way_node, freeway_interxn, road_ways[attached_way]["nodes"]
+        )
+        # Change the entry node to the intersection
+        assert (
+            free_ways[freeway_id]["nodes"][0] == fe
+            or free_ways[freeway_id]["nodes"][-1] == fe
+        )
+        if free_ways[freeway_id]["nodes"][-1] == fe:
+            free_ways[freeway_id]["nodes"] = list(
+                reversed(free_ways[freeway_id]["nodes"])
+            )
+
+        free_ways[freeway_id]["nodes"][0] = freeway_interxn
+
+    return [v for v in free_ways.values() if len(v["nodes"]) >= 2], [
+        v for v in road_ways.values() if len(v["nodes"]) >= 2
+    ]
 
 
 def get_traffic_graphs(traffic_maps, manual_fixer):
@@ -599,18 +713,30 @@ def get_traffic_graphs(traffic_maps, manual_fixer):
             traffic_graphs[tk]["CNTR"], min_length=128
         )
         traffic_graphs[tk]["CNTR"] = _fix_triangle_intersections(
+            traffic_graphs[tk]["CNTR"], max_angle=10
+        )
+        traffic_graphs[tk]["CNTR"] = _fix_triangle_intersections(
             traffic_graphs[tk]["CNTR"], max_angle=25
         )
-        if manual_fixer is not None:
+        if manual_fixer is not None and tk in manual_fixer:
             traffic_graphs[tk]["CNTR"] = _manually_fix_intersections(
                 traffic_graphs[tk]["CNTR"], manual_fixer[tk]["intersections"]
             )
         traffic_graphs[tk]["CNTR"] = _simplify_ways(traffic_graphs[tk]["CNTR"])
-        # Debug: Visualization
-        # img = np.zeros((19600, 19600), np.uint8)
-        # for way in traffic_graphs[tk]["CNTR"]:
-        #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
 
+    # Attach freeways to roads
+    traffic_graphs["FREEWAY"]["CNTR"], traffic_graphs["REST"]["CNTR"] = (
+        _attach_freeways_and_roads(
+            traffic_graphs["FREEWAY"]["CNTR"], traffic_graphs["REST"]["CNTR"]
+        )
+    )
+
+    # Debug: Visualization
+    # img = np.zeros((19600, 19600), np.uint8)
+    # for way in traffic_graphs["REST"]["CNTR"]:
+    #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
+    # for way in traffic_graphs["FREEWAY"]["CNTR"]:
+    #     img = cv2.polylines(img, [np.array(way["nodes"])], False, 255, 1)
     return traffic_graphs
 
 
