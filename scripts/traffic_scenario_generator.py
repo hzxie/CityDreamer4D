@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-07 18:35:59
+# @Last Modified at: 2024-12-07 20:27:05
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -708,7 +708,7 @@ def get_traffic_graphs(traffic_maps, manual_fixer):
     traffic_graphs = {}
     for tk, tv in traffic_maps.items():
         traffic_graphs[tk] = {
-            # "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
+            "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
             "CNTR": _get_kpts_graph(tv["CNTR"], closed=False),
         }
         # Post-processing for the road centerlines
@@ -761,8 +761,57 @@ def _get_way_widths(road_network, road_centers, lane_width, centerline_width):
             if width < min_width:
                 min_width = width
 
-        rc["width"] = int(min_width - centerline_width + 0.5)
-        rc["n_lanes"] = math.floor(rc["width"] / lane_width)
+        rc["width"] = int(min_width + 0.5)
+        rc["n_lanes"] = math.floor((rc["width"] - centerline_width) / lane_width)
+
+    return road_centers
+
+
+def _get_next_node_along_path(way_nodes, dist):
+    # Step 1: Iterate through the points to calculate distances
+    accumulated_distance = 0
+    for i in range(1, len(way_nodes)):
+        x1, y1 = way_nodes[i - 1]
+        x2, y2 = way_nodes[i]
+        segment_distance = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        
+        if accumulated_distance + segment_distance >= dist:
+            # Step 2: Find the remaining distance to cover in this segment
+            remaining_distance = dist - accumulated_distance
+            # Step 3: Interpolate to find the new point
+            ratio = remaining_distance / segment_distance
+            x_new = x1 + ratio * (x2 - x1)
+            y_new = y1 + ratio * (y2 - y1)
+            return int(x_new + 0.5), int(y_new + 0.5)
+        
+        # Accumulate the distance and move to the next segment
+        accumulated_distance += segment_distance
+    
+    assert False, "The distance is too long to be covered by the way."
+
+
+def _get_shortened_ways(road_centers):
+    # Organizing the intersections
+    interxns = {}
+    for rc in road_centers:
+        for n in [rc["nodes"][0], rc["nodes"][-1]]:
+            if n not in interxns:
+                interxns[n] = {"ways": [], "width": 0}
+            interxns[n]["ways"].append(rc["id"])
+            interxns[n]["width"] = max(interxns[n]["width"], rc["width"])
+
+    interxns = {k: v for k, v in interxns.items() if len(v) > 1}
+
+    # Shorten the ways
+    for k, v in interxns.items():
+        for w in v["ways"]:
+            way_nodes = road_centers[w]["nodes"]
+            assert way_nodes[0] == k or way_nodes[-1] == k
+
+            if way_nodes[0] == k:
+                way_nodes.insert(1, _get_next_node_along_path(way_nodes, v["width"]))
+            else:
+                way_nodes.insert(-1, _get_next_node_along_path(way_nodes[::-1], v["width"]))
 
     return road_centers
 
@@ -770,7 +819,7 @@ def _get_way_widths(road_network, road_centers, lane_width, centerline_width):
 def _is_nodes_reversed(nodes):
     if len(nodes) < 2:
         return False
-    
+
     first_node = nodes[0]
     last_node = nodes[-1]
     if first_node[0] < last_node[0]:
@@ -784,21 +833,20 @@ def _is_nodes_reversed(nodes):
 def _get_traffic_lanes(road_centers, lane_width):
     lanes = []
     for rc in road_centers:
-        n_nodes = len(rc["nodes"])
-        rc["nodes"] = (
-            rc["nodes"][::-1] if _is_nodes_reversed(rc["nodes"]) else rc["nodes"]
-        )
+        nodes = rc["nodes"][1:-1]
+        nodes = nodes[::-1] if _is_nodes_reversed(nodes) else nodes
+        n_nodes = len(nodes)
 
         vectors = []
         for i in range(1, n_nodes):
-            vec = np.array(rc["nodes"][i]) - np.array(rc["nodes"][i - 1])
+            vec = _get_vector(nodes[i], nodes[i - 1])
             vec = vec / np.linalg.norm(vec)
             vec = np.array([-vec[1], vec[0]])
             vectors.append(vec)
 
         for i in range(1, rc["n_lanes"] + 1):
             _fwd_lane, _bwd_lane = [], []
-            for n in rc["nodes"]:
+            for n in nodes:
                 _fwd_lane.append(
                     tuple((np.array(n) - vec * lane_width * i).astype(np.int32))
                 )
@@ -821,7 +869,8 @@ def get_traffic_lanes(road_networks, traffic_graphs, lane_width, centerline_widt
         tv["CNTR"] = _get_way_widths(
             road_networks[tk], tv["CNTR"], lane_width, centerline_width
         )
-        tv["LANE"] = _get_traffic_lanes(tv["CNTR"], lane_width) 
+        tv["CNTR"] = _get_shortened_ways(tv["CNTR"])
+        tv["LANE"] = _get_traffic_lanes(tv["CNTR"], lane_width)
 
 
 def main(projection_dir, manual_fix_file, project_names):
