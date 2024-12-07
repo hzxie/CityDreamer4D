@@ -4,13 +4,14 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-15 13:19:57
+# @Last Modified at: 2024-12-07 18:35:59
 # @Email:  root@haozhexie.com
 
 import argparse
 import cv2
 import json
 import logging
+import math
 import numpy as np
 import os
 import pickle
@@ -36,7 +37,9 @@ import extensions.keypoint_detector
 def get_cfg_values(key):
     from config import cfg
 
-    return cfg.DATASETS.CITY_SAMPLE[key]
+    CFG = {"LANE_WIDTH": 14, "CENTERLINE_WIDTH": 10}
+
+    return CFG[key] if key in CFG else cfg.DATASETS.CITY_SAMPLE[key]
 
 
 def get_road_networks(projection_dir, project_names):
@@ -564,6 +567,9 @@ def _manually_fix_intersections(ways, intersections):
     interxns = {k: v for k, v in nodes.items() if len(v["ways"]) > 2}
     for interxn in intersections:
         ngr_interxns = _get_nearby_nodes(interxn["node"], interxn["kernel"], interxns)
+        if "include" in interxn:
+            ngr_interxns.extend([tuple(n) for n in interxn["include"]])
+
         for ni in ngr_interxns:
             for w in nodes[ni]["ways"]:
                 way_nodes = ways[w]["nodes"]
@@ -646,9 +652,9 @@ def _get_attached_way(freeway_entry, road_interxns, road_ways):
         )
         if freeway_interxn is not None:
             attached_way = cw
-            return (attached_way, freeway_interxn, anchor_way_node)
+            return attached_way, freeway_interxn, anchor_way_node
 
-    return None
+    return None, None, None
 
 
 def _insert_node_after(anchor_node, new_node, way_nodes):
@@ -674,6 +680,9 @@ def _attach_freeways_and_roads(freeways, roads):
         attached_way, freeway_interxn, anchor_way_node = _get_attached_way(
             (fe, entry_next), road_interxns, road_ways
         )
+        if attached_way is None:
+            logging.warning("No attached way found for freeway entry: %s" % (fe,))
+            continue
         # Add intersection to the attached way nodes
         road_ways[attached_way]["nodes"] = _insert_node_after(
             anchor_way_node, freeway_interxn, road_ways[attached_way]["nodes"]
@@ -699,7 +708,7 @@ def get_traffic_graphs(traffic_maps, manual_fixer):
     traffic_graphs = {}
     for tk, tv in traffic_maps.items():
         traffic_graphs[tk] = {
-            "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
+            # "EDGE": _get_kpts_graph(tv["EDGE"], closed=True),
             "CNTR": _get_kpts_graph(tv["CNTR"], closed=False),
         }
         # Post-processing for the road centerlines
@@ -740,9 +749,79 @@ def get_traffic_graphs(traffic_maps, manual_fixer):
     return traffic_graphs
 
 
-def get_road_widths(road_net, road_centers):
-    dist_map = cv2.distanceTransform(road_net.astype(np.uint8), cv2.DIST_L2, 3)
-    # TODO
+def _get_way_widths(road_network, road_centers, lane_width, centerline_width):
+    dist_map = cv2.distanceTransform(road_network.astype(np.uint8), cv2.DIST_L2, 3)
+    for rc in road_centers:
+        min_width = float("inf")
+        n_nodes = len(rc["nodes"])
+        for i in range(1, n_nodes):
+            mid_pt = (np.array(rc["nodes"][i - 1]) + np.array(rc["nodes"][i])) / 2
+            mid_pt = (int(mid_pt[0] + 0.5), int(mid_pt[1] + 0.5))
+            width = dist_map[mid_pt[1], mid_pt[0]]
+            if width < min_width:
+                min_width = width
+
+        rc["width"] = int(min_width - centerline_width + 0.5)
+        rc["n_lanes"] = math.floor(rc["width"] / lane_width)
+
+    return road_centers
+
+
+def _is_nodes_reversed(nodes):
+    if len(nodes) < 2:
+        return False
+    
+    first_node = nodes[0]
+    last_node = nodes[-1]
+    if first_node[0] < last_node[0]:
+        return False
+    elif first_node[0] > last_node[0]:
+        return True
+
+    return first_node[1] < last_node[1]
+
+
+def _get_traffic_lanes(road_centers, lane_width):
+    lanes = []
+    for rc in road_centers:
+        n_nodes = len(rc["nodes"])
+        rc["nodes"] = (
+            rc["nodes"][::-1] if _is_nodes_reversed(rc["nodes"]) else rc["nodes"]
+        )
+
+        vectors = []
+        for i in range(1, n_nodes):
+            vec = np.array(rc["nodes"][i]) - np.array(rc["nodes"][i - 1])
+            vec = vec / np.linalg.norm(vec)
+            vec = np.array([-vec[1], vec[0]])
+            vectors.append(vec)
+
+        for i in range(1, rc["n_lanes"] + 1):
+            _fwd_lane, _bwd_lane = [], []
+            for n in rc["nodes"]:
+                _fwd_lane.append(
+                    tuple((np.array(n) - vec * lane_width * i).astype(np.int32))
+                )
+                _bwd_lane.append(
+                    tuple((np.array(n) + vec * lane_width * i).astype(np.int32))
+                )
+
+            lanes.append({"way": rc["id"], "nodes": _fwd_lane, "dir": "F"})
+            lanes.append({"way": rc["id"], "nodes": _bwd_lane[::-1], "dir": "B"})
+
+    # Debug: Visualization
+    # img = np.zeros((19600, 19600), np.uint8)
+    # for lane in lanes:
+    #     img = cv2.polylines(img, [np.array(lane["nodes"])], False, 255, 1)
+    return lanes
+
+
+def get_traffic_lanes(road_networks, traffic_graphs, lane_width, centerline_width):
+    for tk, tv in traffic_graphs.items():
+        tv["CNTR"] = _get_way_widths(
+            road_networks[tk], tv["CNTR"], lane_width, centerline_width
+        )
+        tv["LANE"] = _get_traffic_lanes(tv["CNTR"], lane_width) 
 
 
 def main(projection_dir, manual_fix_file, project_names):
@@ -750,17 +829,28 @@ def main(projection_dir, manual_fix_file, project_names):
     road_networks = get_road_networks(projection_dir, project_names)
     logging.info("Parsing Traffic Maps ...")
     traffic_maps = get_traffic_maps(road_networks)
-    # Faster Debug
+    # # Faster Debug
     # with open("output/traffic_maps.pkl", "rb") as f:
     #     # pickle.dump(traffic_maps, f)
     #     traffic_maps = pickle.load(f)
 
-    logging.info("Parsing Traffic Graphs ...")
     manual_fixer = None
     if os.path.exists(manual_fix_file):
         manual_fixer = json.loads(open(manual_fix_file, "r").read())
 
+    logging.info("Parsing Traffic Graphs ...")
     traffic_graphs = get_traffic_graphs(traffic_maps, manual_fixer)
+    # # Faster Debug
+    # with open("output/traffic_graphs.pkl", "rb") as f:
+    #     # pickle.dump(traffic_graphs, f)
+    #     traffic_graphs = pickle.load(f)
+
+    traffic_graphs = get_traffic_lanes(
+        road_networks,
+        traffic_graphs,
+        get_cfg_values("LANE_WIDTH"),
+        get_cfg_values("CENTERLINE_WIDTH"),
+    )
 
 
 if __name__ == "__main__":
@@ -771,20 +861,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="The Traffic Scenario Generator")
     parser.add_argument(
         "--projection_dir",
-        default=os.path.join(
-            PROJECT_HOME, "data", "city-sample", "City01", "Projections"
-        ),
+        default=os.path.join(PROJECT_HOME, "data", "city-sample", "%s", "Projections"),
     )
     parser.add_argument(
         "--manual_fix_file",
         default=os.path.join(
-            PROJECT_HOME, "data", "city-sample", "City01", "TrafficFix.json"
+            PROJECT_HOME, "data", "city-sample", "%s", "TrafficFix.json"
         ),
     )
+    parser.add_argument("--city", default="City01")
     parser.add_argument("--project_names", default="REST, FREEWAY")
     args = parser.parse_args()
     main(
-        args.projection_dir,
-        args.manual_fix_file,
+        args.projection_dir % (args.city),
+        args.manual_fix_file % (args.city),
         [pn.strip() for pn in args.project_names.split(",")],
     )
