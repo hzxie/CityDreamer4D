@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-07 20:27:05
+# @Last Modified at: 2024-12-09 11:12:37
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -377,6 +377,15 @@ def _get_nearby_nodes(curr_node, kernel, nodes):
     return ngr_nodes
 
 
+def _remove_duplicated_nodes(way_nodes):
+    _way_nodes = [way_nodes[0]]
+    for i in range(1, len(way_nodes)):
+        if way_nodes[i] != way_nodes[i - 1]:
+            _way_nodes.append(way_nodes[i])
+
+    return _way_nodes
+
+
 def _merge_nearby_intersections(ways, kernel, new_cord_callback):
     clusters = {}
     nodes, ways = _get_way_nodes(ways)
@@ -403,10 +412,7 @@ def _merge_nearby_intersections(ways, kernel, new_cord_callback):
                     if wn == cn:
                         way_nodes[i] = tuple(mean_cord)
             # Remove duplicated nodes in the way
-            ways[w]["nodes"] = []
-            for i in range(len(way_nodes)):
-                if i == 0 or way_nodes[i] != way_nodes[i - 1]:
-                    ways[w]["nodes"].append(way_nodes[i])
+            ways[w]["nodes"] = _remove_duplicated_nodes(way_nodes)
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
@@ -571,6 +577,9 @@ def _manually_fix_intersections(ways, intersections):
             ngr_interxns.extend([tuple(n) for n in interxn["include"]])
 
         for ni in ngr_interxns:
+            if ni not in nodes:
+                logging.warning("The node %s is not found." % (ni,))
+                continue
             for w in nodes[ni]["ways"]:
                 way_nodes = ways[w]["nodes"]
                 for i, wn in enumerate(way_nodes):
@@ -580,10 +589,7 @@ def _manually_fix_intersections(ways, intersections):
                     if wn == ni or interxn_dist < interxn["kernel"]:
                         way_nodes[i] = tuple(interxn["node"])
             # Remove duplicated nodes in the way
-            ways[w]["nodes"] = []
-            for i in range(len(way_nodes)):
-                if i == 0 or way_nodes[i] != way_nodes[i - 1]:
-                    ways[w]["nodes"].append(way_nodes[i])
+            ways[w]["nodes"] = _remove_duplicated_nodes(way_nodes)
 
     return [v for v in ways.values() if len(v["nodes"]) >= 2]
 
@@ -773,8 +779,7 @@ def _get_next_node_along_path(way_nodes, dist):
     for i in range(1, len(way_nodes)):
         x1, y1 = way_nodes[i - 1]
         x2, y2 = way_nodes[i]
-        segment_distance = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-        
+        segment_distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
         if accumulated_distance + segment_distance >= dist:
             # Step 2: Find the remaining distance to cover in this segment
             remaining_distance = dist - accumulated_distance
@@ -783,11 +788,11 @@ def _get_next_node_along_path(way_nodes, dist):
             x_new = x1 + ratio * (x2 - x1)
             y_new = y1 + ratio * (y2 - y1)
             return int(x_new + 0.5), int(y_new + 0.5)
-        
+
         # Accumulate the distance and move to the next segment
         accumulated_distance += segment_distance
-    
-    assert False, "The distance is too long to be covered by the way."
+
+    return None, None
 
 
 def _get_shortened_ways(road_centers):
@@ -806,12 +811,16 @@ def _get_shortened_ways(road_centers):
     for k, v in interxns.items():
         for w in v["ways"]:
             way_nodes = road_centers[w]["nodes"]
+            # Remove duplicated nodes in the way
+            # way_nodes = _remove_duplicated_nodes(way_nodes)
             assert way_nodes[0] == k or way_nodes[-1] == k
 
             if way_nodes[0] == k:
-                way_nodes.insert(1, _get_next_node_along_path(way_nodes, v["width"]))
+                _node = _get_next_node_along_path(way_nodes, v["width"])
+                way_nodes.insert(1, _node)
             else:
-                way_nodes.insert(-1, _get_next_node_along_path(way_nodes[::-1], v["width"]))
+                _node = _get_next_node_along_path(way_nodes[::-1], v["width"])
+                way_nodes.insert(-1, _node)
 
     return road_centers
 
@@ -854,8 +863,8 @@ def _get_traffic_lanes(road_centers, lane_width):
                     tuple((np.array(n) + vec * lane_width * i).astype(np.int32))
                 )
 
-            lanes.append({"way": rc["id"], "nodes": _fwd_lane, "dir": "F"})
-            lanes.append({"way": rc["id"], "nodes": _bwd_lane[::-1], "dir": "B"})
+            lanes.append({"way": rc["id"], "nodes": _fwd_lane[::-1], "dir": "F"})
+            lanes.append({"way": rc["id"], "nodes": _bwd_lane, "dir": "B"})
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
@@ -871,9 +880,78 @@ def get_traffic_lanes(road_networks, traffic_graphs, lane_width, centerline_widt
         )
         tv["CNTR"] = _get_shortened_ways(tv["CNTR"])
         tv["LANE"] = _get_traffic_lanes(tv["CNTR"], lane_width)
+        # TODO
+        # tv["LANE"] = _connect_intersection_lanes(tv["LANE"])
+        # tv["LINE"] = None
+
+    return traffic_graphs
 
 
-def main(projection_dir, manual_fix_file, project_names):
+def _get_heading(cx, cy, way_nodes):
+    for i in range(1, len(way_nodes)):
+        prev_node = way_nodes[i - 1]
+        next_node = way_nodes[i]
+        if (
+            cx >= min(prev_node[0], next_node[0])
+            and cx <= max(prev_node[0], next_node[0])
+            and cy >= min(prev_node[1], next_node[1])
+            and cy <= max(prev_node[1], next_node[1])
+        ):
+            delta_x = next_node[0] - prev_node[0]
+            delta_y = next_node[1] - prev_node[1]
+            return math.degrees(math.atan2(delta_y, delta_x))
+
+    # assert False, "The point is not on the way."
+    return None
+
+
+def _get_vehicles_along_lane(traffic_lane):
+    MIN_LANE_LENGTH = 100
+
+    vehicles = []
+    lane_length = _get_way_length(traffic_lane["nodes"])
+    if lane_length < MIN_LANE_LENGTH:
+        return vehicles
+
+    while True:
+        offset = MIN_LANE_LENGTH * len(vehicles) + np.random.randint(-25, 25)
+        cx, cy = _get_next_node_along_path(traffic_lane["nodes"], offset)
+        if cx is None and cy is None:
+            break
+
+        heading = _get_heading(cx, cy, traffic_lane["nodes"])
+        if heading is None:
+            continue
+
+        vehicles.append({"cx": cx, "cy": cy, "heading": heading})
+
+    # Random dropout
+    return [v for v in vehicles if np.random.rand() > 0.5]
+
+
+def _get_vehicles_along_lanes(traffic_lanes):
+    tracks = []
+    for tl in traffic_lanes:
+        if "dir" not in tl:
+            # DO NOT put vehicles on the intersections
+            continue
+
+        tracks.extend(_get_vehicles_along_lane(tl))
+
+    return tracks
+
+
+def generate_init_scenario(traffic_lanes):
+    scenario = {"timestamps_seconds": 0}
+    for tv in traffic_lanes.values():
+        scenario["TRACK"] = _get_vehicles_along_lanes(tv)
+        # TODO
+        # scenario["TLIGHT"] = None
+
+    return scenario
+
+
+def main(projection_dir, manual_fix_file, project_names, n_steps):
     logging.info("Parsing Road Networks ...")
     road_networks = get_road_networks(projection_dir, project_names)
     logging.info("Parsing Traffic Maps ...")
@@ -900,6 +978,21 @@ def main(projection_dir, manual_fix_file, project_names):
         get_cfg_values("LANE_WIDTH"),
         get_cfg_values("CENTERLINE_WIDTH"),
     )
+    # # Faster Debug
+    # with open("output/traffic_lanes.pkl", "rb") as f:
+    #     # pickle.dump(traffic_graphs, f)
+    #     traffic_graphs = pickle.load(f)
+
+    logging.info("Generating Traffic Scenarios ...")
+    scenarios = []
+    scenarios.append(
+        generate_init_scenario({k: v["LANE"] for k, v in traffic_graphs.items()})
+    )
+    # TODO: Generate scenarios in the next steps
+    # for i in range(n_steps):
+    #     scenarios.generate_next_scenario(scenarios[-1])
+
+    # logging.info("Convert Traffic Scenarios to BEV Maps ...")
 
 
 if __name__ == "__main__":
@@ -920,9 +1013,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--city", default="City01")
     parser.add_argument("--project_names", default="REST, FREEWAY")
+    parser.add_argument("--steps", type=int, default=20)
     args = parser.parse_args()
     main(
         args.projection_dir % (args.city),
         args.manual_fix_file % (args.city),
         [pn.strip() for pn in args.project_names.split(",")],
+        args.steps,
     )
