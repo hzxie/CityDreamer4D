@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-11 11:06:45
+# @Last Modified at: 2024-12-12 09:43:04
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -1001,7 +1001,7 @@ def _get_vehicles_along_lane(traffic_lane, height_map, min_id):
         #               3: TYPE_CYCLIST, 4: TYPE_OTHER
         vehicles.append(
             {
-                "id": min_id,
+                "id": np.iinfo(np.int16).max - min_id,
                 "object_type": 1,
                 "cx": cx,
                 "cy": cy,
@@ -1016,22 +1016,28 @@ def _get_vehicles_along_lane(traffic_lane, height_map, min_id):
     return [v for v in vehicles if np.random.rand() > 0.6]
 
 
-def _get_vehicles_along_lanes(traffic_lanes, height_map):
+def _get_vehicles_along_lanes(traffic_lanes, height_map, n_vehicles=0):
     tracks = []
     for tl in traffic_lanes:
         if "dir" not in tl:
             # DO NOT put vehicles on the intersections
             continue
 
-        tracks.extend(_get_vehicles_along_lane(tl, height_map, len(tracks) + 1))
+        tracks.extend(
+            _get_vehicles_along_lane(tl, height_map, n_vehicles + len(tracks) + 1)
+        )
 
     return tracks
 
 
 def generate_init_scenario(traffic_lanes, scene_bevs):
     scenario = {}
+    n_vehicles = 0
     for tk, tv in traffic_lanes.items():
-        scenario[tk] = {"TRACK": _get_vehicles_along_lanes(tv, scene_bevs[tk]["TD_HF"])}
+        scenario[tk] = {
+            "TRACK": _get_vehicles_along_lanes(tv, scene_bevs[tk]["TD_HF"], n_vehicles)
+        }
+        n_vehicles += len(scenario[tk]["TRACK"])
         # TODO
         # if tk != "FREEWAY":
         #     scenario[tk]["TLIGHT"] = None
@@ -1053,7 +1059,7 @@ def _get_diff_height_map(height_map, cz, tilt):
     return height_map
 
 
-def _put_rotated_image_patch(image, patch, center, angle):
+def _put_rotated_image_patch(image, patch, center, angle, interpolation):
     h, w = patch.shape[:2]
     # Rotate the patch
     rotation_matrix = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
@@ -1070,7 +1076,7 @@ def _put_rotated_image_patch(image, patch, center, angle):
         patch,
         rotation_matrix,
         (new_w, new_h),
-        flags=cv2.INTER_LINEAR,
+        flags=interpolation,
         borderValue=(0, 0, 0),
     )
 
@@ -1108,11 +1114,13 @@ def _get_traffic_bev_map(tracks, vehicle_bevs, map_size):
             v_patch = vehicle[k].copy().astype(np.int16)
             if k == "INS_BEV":
                 v_patch *= t["id"]
+                interp = cv2.INTER_NEAREST
             elif k in ["TD_HF", "BU_HF"]:
                 v_patch = _get_diff_height_map(v_patch, t["cz"], t["tilt"])
+                interp = cv2.INTER_LINEAR
             # The heading angle in the OpenCV is counter-clockwise
             traffic_bev[k] = _put_rotated_image_patch(
-                v, v_patch, (t["cx"], t["cy"]), -t["heading"]
+                v, v_patch, (t["cx"], t["cy"]), -t["heading"], interp
             )
 
     return traffic_bev
@@ -1186,9 +1194,7 @@ def main(
     )
     for idx, (s, tb) in enumerate(zip(scenarios, traffic_bevs)):
         os.makedirs(os.path.join(scenario_dir, "%04d" % idx), exist_ok=True)
-        with open(
-            os.path.join(scenario_dir, "%04d" % idx, "scenario.pkl"), "wb"
-        ) as fp:
+        with open(os.path.join(scenario_dir, "%04d" % idx, "scenario.pkl"), "wb") as fp:
             pickle.dump(s, fp)
 
         for k, v in tb.items():

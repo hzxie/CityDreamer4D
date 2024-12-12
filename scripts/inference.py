@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-03 18:24:30
+# @Last Modified at: 2024-12-11 21:28:52
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -46,6 +46,8 @@ def get_cfg_value(key, dataset=None):
         "N_VOXEL_SAMPLES": 6,
         "N_VIEWPOINTS": 24,
         "RAYCAST_CACHE_DIR": "/tmp/raycast",
+        "BLDG_INST_RANGE": [10, 30000],
+        "CAR_INST_RANGE": [30000, 32768],
     }
 
     if key in CONSTANTS:
@@ -61,7 +63,6 @@ def _get_dataset_cfg_value(key, dataset):
         "N_LAYOUT_CLASSES": "N_CLASSES",
         "CLASSES": "CLASSES",
         "BLDG_MAX_HEIGHT": "MAX_HEIGHT",
-        "BLDG_INST_RANGE": "BLDG.INS_RANGE",
         "VOL_SIZE/LAYOUT": "VOL_SIZE",
         "VOL_SIZE/BLDG": "BLDG.VOL_SIZE",
         "VOL_SIZE/CAR": "CAR.VOL_SIZE",
@@ -165,7 +166,7 @@ def get_models(dataset, bg_ckpt, bldg_ckpt, car_ckpt):
 
     car_model = None
     if car_ckpt is not None:
-        car_ckpt = _get_model("%s_CAR" % dataset, car_ckpt)
+        car_model = _get_model("%s_CAR" % dataset, car_ckpt)
 
     return bg_model, bldg_model, car_model
 
@@ -192,18 +193,27 @@ def get_city_layout(
         raise ValueError("Unknown dataset: %s" % dataset)
 
 
-def get_city_sample_layout(city_sample_dir, bldg_inst_range):
+def _get_projections(projection_dir, layers, maps):
     projections = {}
-    # NOTE: Static CARS are omitted in the CITY_SAMPLE dataset
-    for k in ["FREEWAY", "REST"]:
+    for k in layers:
         projections[k] = {
             mk: np.array(
-                Image.open(
-                    os.path.join(city_sample_dir, "Projections", "%s_%s.png" % (k, mk))
-                )
+                Image.open(os.path.join(projection_dir, "%s_%s.png" % (k, mk)))
             ).astype(np.int16)
-            for mk in ["INS_BEV", "TD_HF", "BU_HF"]
+            for mk in maps
         }
+
+    print(projection_dir, np.unique(projections["REST"]["INS_BEV"]))
+    return projections
+
+
+def get_city_sample_layout(city_sample_dir, bldg_inst_range):
+    # NOTE: Static CARS are omitted in the CITY_SAMPLE dataset
+    projections = _get_projections(
+        os.path.join(city_sample_dir, "Projections"),
+        ["FREEWAY", "REST"],
+        ["INS_BEV", "TD_HF", "BU_HF"],
+    )
 
     with open(os.path.join(city_sample_dir, "Footprints.pkl"), "rb") as fp:
         ftp_stats = pickle.load(fp)
@@ -269,10 +279,49 @@ def _clip_height_field(hf, layout_max_height):
     return hf
 
 
-def get_latent_codes(bldg_stats, bg_style_dim, output_device):
+def get_traffic_scenarios(dataset, dataset_dirs):
+    if dataset == "CITY_SAMPLE":
+        scenario_dir = os.path.join(dataset_dirs["city_sample"], "Scenarios")
+        layers = ["FREEWAY", "REST"]
+    elif dataset == "GOOGLE_EARTH":
+        raise NotImplementedError
+    else:
+        raise ValueError("Unknown dataset: %s" % dataset)
+
+    scenarios = []
+    for s in sorted(os.listdir(scenario_dir)):
+        with open(os.path.join(scenario_dir, s, "scenario.pkl"), "rb") as fp:
+            metadata = pickle.load(fp)
+
+        scenarios.append(
+            {
+                "METADATA": metadata,
+                "PROJECTIONS": _get_projections(
+                    os.path.join(scenario_dir, s),
+                    layers,
+                    ["INS_BEV", "TD_HF", "BU_HF"],
+                ),
+            }
+        )
+    return scenarios
+
+
+def get_latent_codes(bldg_stats, scenarios, bg_style_dim, output_device):
     bg_z = _get_z(output_device, bg_style_dim)
     building_zs = {k: _get_z(output_device) for k in bldg_stats.keys()}
-    return bg_z, building_zs
+    if scenarios:
+        car_zs = {
+            k: _get_z(output_device)
+            for k in set(
+                [
+                    t["id"]
+                    for scene in scenarios
+                    for metadata in scene["METADATA"].values()
+                    for t in metadata["TRACK"]
+                ]
+            )
+        }
+    return bg_z, building_zs, car_zs
 
 
 def _get_z(device, z_dim=256):
@@ -318,7 +367,7 @@ def get_hf_seg_tensor(part_hf, part_seg, n_layout_classes, bldg_cfg, output_devi
     return torch.cat([part_hf, part_seg], dim=1)
 
 
-def get_seg_volume(projections, bev_map_bbox, vol_sizes, bldg_cfg):
+def get_seg_volume(projections, traffic_scenario, bev_map_bbox, vol_sizes, bldg_cfg):
     seg_volume = torch.zeros(
         (vol_sizes["LAYOUT"], vol_sizes["LAYOUT"], bldg_cfg["MAX_HEIGHT"]),
         dtype=(
@@ -328,17 +377,19 @@ def get_seg_volume(projections, bev_map_bbox, vol_sizes, bldg_cfg):
         ),
         device=torch.device("cuda:0"),
     )
-    _projections = {}
-    for k in ["CAR", "FREEWAY", "REST"]:
-        if k not in projections:
-            continue
-        for mk in ["TD_HF", "BU_HF", "INS_BEV"]:
-            _projections[mk] = get_image_patch(
-                projections[k][mk],
-                bev_map_bbox["TL"] + vol_sizes["BLDG"],
-                bev_map_bbox["BR"] - vol_sizes["BLDG"],
-            )
-            assert _projections[mk].shape == (vol_sizes["LAYOUT"], vol_sizes["LAYOUT"])
+    for proj in [projections, traffic_scenario]:
+        _projections = {}
+        for layer in proj.values():
+            for mk in ["TD_HF", "BU_HF", "INS_BEV"]:
+                _projections[mk] = get_image_patch(
+                    layer[mk],
+                    bev_map_bbox["TL"] + vol_sizes["BLDG"],
+                    bev_map_bbox["BR"] - vol_sizes["BLDG"],
+                )
+                assert _projections[mk].shape == (
+                    vol_sizes["LAYOUT"],
+                    vol_sizes["LAYOUT"],
+                )
 
         assert np.min(_projections["TD_HF"]) >= 0
         assert np.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
@@ -714,10 +765,8 @@ def main(
     bldg_ckpt,
     car_ckpt,
     dataset_dirs,
-    cache_raycast,
     output_file,
 ):
-    # TODO: car_model
     logging.info("Initialize models ...")
     bg_model, bldg_model, car_model = get_models(dataset, bg_ckpt, bldg_ckpt, car_ckpt)
     # Generate height fields and seg maps
@@ -735,12 +784,38 @@ def main(
         "City Layout Patch Size (HxW): %s" % (projections["REST"]["TD_HF"].shape,)
     )
 
+    # Load the traffic scenarios
+    scenarios = []
+    if car_model is not None:
+        scenarios = get_traffic_scenarios(dataset, dataset_dirs)
+
+    # TODO: Duplicate the scenarios
+    scenarios = scenarios * get_cfg_value("N_VIEWPOINTS")
+
     # Generate latent codes
     logging.info("Generating latent codes ...")
-    bg_z, bldg_zs = get_latent_codes(
+    bg_z, bldg_zs, car_zs = get_latent_codes(
         bldg_stats,
+        scenarios,
         bg_model.module.cfg.STYLE_DIM,
         bldg_model.output_device,
+    )
+    # Check the instance ID for buildings and cars
+    assert min(list(bldg_zs.keys())) >= get_cfg_value("BLDG_INST_RANGE", dataset)[0]
+    assert max(list(bldg_zs.keys())) < get_cfg_value("BLDG_INST_RANGE", dataset)[1]
+    assert min(list(car_zs.keys())) >= get_cfg_value("CAR_INST_RANGE", dataset)[0]
+    assert max(list(car_zs.keys())) < get_cfg_value("CAR_INST_RANGE", dataset)[1]
+
+    # Generate camera trajectories
+    logging.info("Generating camera poses ...")
+    radius = 2048  # np.random.randint(128, 512)
+    altitude = 1024  # np.random.randint(256, 512)
+    logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
+    cam_poses = get_orbit_camera_positions(
+        radius,
+        altitude,
+        get_cfg_value("VOL_SIZE/LAYOUT", dataset),
+        get_cfg_value("N_VIEWPOINTS", dataset),
     )
 
     # Simply use image center as the patch center
@@ -789,77 +864,54 @@ def main(
         "BLDG": get_cfg_value("VOL_SIZE/BLDG", dataset),
         "EXT": get_cfg_value("VOL_SIZE/EXTEND", dataset),
     }
-    seg_volume = get_seg_volume(
-        projections,
-        bev_map_bbox,
-        VOL_SIZES,
-        {
-            "ROOF_HEIGHT": get_cfg_value("BLDG_ROOF_HEIGHT", dataset),
-            "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET", dataset),
-            "INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
-            "MAX_HEIGHT": get_cfg_value("BLDG_MAX_HEIGHT", dataset),
-        },
-    )
-
-    # Generate camera trajectories
-    logging.info("Generating camera poses ...")
-    radius = 512  # np.random.randint(128, 512)
-    altitude = 512  # np.random.randint(256, 512)
-    logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
-    cam_pose = get_orbit_camera_positions(
-        radius,
-        altitude,
-        get_cfg_value("VOL_SIZE/LAYOUT", dataset),
-        get_cfg_value("N_VIEWPOINTS", dataset),
-    )
-
     IMG_CFG = {
         "HEIGHT": get_cfg_value("IMAGE_HEIGHT", dataset),
         "WIDTH": get_cfg_value("IMAGE_WIDTH", dataset),
         "PADDING": get_cfg_value("IMAGE_PADDING", dataset),
     }
 
-    if cache_raycast:
-        logging.info("Caching raycast results ...")
-        os.makedirs(get_cfg_value("RAYCAST_CACHE_DIR"), exist_ok=True)
-        for f_idx, cp in enumerate(tqdm(cam_pose)):
-            voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
-                seg_volume,
-                cp,
-                IMG_CFG,
-                get_cfg_value("IMAGE_VFOV", dataset),
-                get_cfg_value("N_VOXEL_SAMPLES", dataset),
+    logging.info("Caching raycast results ...")
+    os.makedirs(get_cfg_value("RAYCAST_CACHE_DIR"), exist_ok=True)
+    for f_idx, (cp, tf) in enumerate(zip(tqdm(cam_poses), scenarios)):
+        seg_volume = get_seg_volume(
+            projections,
+            tf["PROJECTIONS"],
+            bev_map_bbox,
+            VOL_SIZES,
+            {
+                "ROOF_HEIGHT": get_cfg_value("BLDG_ROOF_HEIGHT", dataset),
+                "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET", dataset),
+                "INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
+                "MAX_HEIGHT": get_cfg_value("BLDG_MAX_HEIGHT", dataset),
+            },
+        )
+        voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
+            seg_volume,
+            cp,
+            IMG_CFG,
+            get_cfg_value("IMAGE_VFOV", dataset),
+            get_cfg_value("N_VOXEL_SAMPLES", dataset),
+        )
+        with open(
+            os.path.join(get_cfg_value("RAYCAST_CACHE_DIR"), "%04d.pkl" % f_idx),
+            "wb",
+        ) as fp:
+            pickle.dump(
+                (voxel_id, depth2, raydirs, cam_origin),
+                fp,
             )
-            with open(
-                os.path.join(get_cfg_value("RAYCAST_CACHE_DIR"), "%04d.pkl" % f_idx),
-                "wb",
-            ) as fp:
-                pickle.dump(
-                    (voxel_id, depth2, raydirs, cam_origin),
-                    fp,
-                )
-
         # Remove seg_volume to save memory
         del voxel_id, depth2, raydirs, cam_origin, seg_volume
         torch.cuda.empty_cache()
 
     logging.info("Rendering videos ...")
     frames = []
-    for f_idx, cp in enumerate(tqdm(cam_pose)):
-        if not cache_raycast:
-            voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
-                seg_volume,
-                cp,
-                IMG_CFG,
-                get_cfg_value("IMAGE_VFOV", dataset),
-                get_cfg_value("N_VOXEL_SAMPLES", dataset),
-            )
-        else:
-            with open(
-                os.path.join(get_cfg_value("RAYCAST_CACHE_DIR"), "%04d.pkl" % f_idx),
-                "rb",
-            ) as fp:
-                voxel_id, depth2, raydirs, cam_origin = pickle.load(fp)
+    for f_idx, (cp, tf) in enumerate(zip(tqdm(cam_poses), scenarios)):
+        with open(
+            os.path.join(get_cfg_value("RAYCAST_CACHE_DIR"), "%04d.pkl" % f_idx),
+            "rb",
+        ) as fp:
+            voxel_id, depth2, raydirs, cam_origin = pickle.load(fp)
 
         img = render_static(
             patch_size,
@@ -903,15 +955,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--bg_ckpt",
-        default=os.path.join(PROJECT_HOME, "output", "gancraft-bg.pth"),
+        default=os.path.join(PROJECT_HOME, "output", "cs-bg.pth"),
     )
     parser.add_argument(
         "--bldg_ckpt",
-        default=os.path.join(PROJECT_HOME, "output", "gancraft-bldg.pth"),
+        default=os.path.join(PROJECT_HOME, "output", "cs-bldg.pth"),
     )
     parser.add_argument(
         "--car_ckpt",
-        default=os.path.join(PROJECT_HOME, "output", "gancraft-car.pth"),
+        default=os.path.join(PROJECT_HOME, "output", "cs-car.pth"),
     )
     parser.add_argument(
         "--city_osm_dir",
@@ -919,7 +971,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--city_sample_dir",
-        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City01"),
+        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City02"),
     )
     parser.add_argument(
         "--patch_height",
@@ -930,10 +982,6 @@ if __name__ == "__main__":
         "--patch_width",
         default=get_cfg_value("IMAGE_WIDTH") // 4,
         type=int,
-    )
-    parser.add_argument(
-        "--cache_raycast",
-        action="store_true",
     )
     parser.add_argument(
         "--output_file",
@@ -949,6 +997,5 @@ if __name__ == "__main__":
         args.bldg_ckpt,
         args.car_ckpt,
         {"osm": args.city_osm_dir, "city_sample": args.city_sample_dir},
-        args.cache_raycast,
         args.output_file,
     )
