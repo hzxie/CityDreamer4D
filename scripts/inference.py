@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-11 21:28:52
+# @Last Modified at: 2024-12-12 11:25:28
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -186,7 +186,7 @@ def get_city_layout(
             dataset_dirs["osm"],
             bldg_facade_cid,
             bldg_inst_mult,
-            bldg_inst_range[0],
+            bldg_inst_range,
             bldg_max_height,
         )
     else:
@@ -202,8 +202,6 @@ def _get_projections(projection_dir, layers, maps):
             ).astype(np.int16)
             for mk in maps
         }
-
-    print(projection_dir, np.unique(projections["REST"]["INS_BEV"]))
     return projections
 
 
@@ -226,12 +224,12 @@ def get_city_sample_layout(city_sample_dir, bldg_inst_range):
 
 
 def get_osm_city_layout(
-    city_osm_dir, bldg_facade_cid, bldg_inst_mult, min_bldg_inst, bldg_max_height
+    city_osm_dir, bldg_facade_cid, bldg_inst_mult, bldg_inst_range, bldg_max_height
 ):
     hf = np.array(Image.open(os.path.join(city_osm_dir, "hf.png")))
     seg = np.array(Image.open(os.path.join(city_osm_dir, "seg.png")).convert("P"))
     ins_seg, bldg_stats = _get_instance_seg_layout(
-        seg, bldg_facade_cid, bldg_inst_mult, min_bldg_inst
+        seg, bldg_facade_cid, bldg_inst_mult, bldg_inst_range
     )
     hf = _clip_height_field(hf, bldg_max_height).astype(np.int16)
 
@@ -246,7 +244,7 @@ def get_osm_city_layout(
 
 
 def _get_instance_seg_layout(
-    seg_layout, bldg_facade_cid, bldg_inst_mult, min_bldg_inst
+    seg_layout, bldg_facade_cid, bldg_inst_mult, bldg_inst_range
 ):
     OSM_CLASSES = {"CONSTRUCTION": 4}
     # Mapping constructions to buildings
@@ -262,15 +260,20 @@ def _get_instance_seg_layout(
     building_mask = labels != 0
     # Make building instance IDs are even numbers and start from min_bldg_inst
     # Assume the ID of a facade instance is 2k (4k), the corresponding roof instance is 2k-1 (4k+1).
-    labels = (labels + min_bldg_inst) * bldg_inst_mult
+    labels = (labels + bldg_inst_range[0]) * bldg_inst_mult
+    # Ignore the instances that are out of the range
+    labels[labels >= bldg_inst_range[1]] = 0
 
     seg_layout[seg_layout == bldg_facade_cid] = 0
     seg_layout = seg_layout * (1 - building_mask) + labels * building_mask
-    assert np.max(labels) < 2147483648
+    assert np.max(labels) < bldg_inst_range[1]
 
     bldg_stats = {
-        (i + min_bldg_inst) * bldg_inst_mult: s[:4] for i, s in enumerate(stats)
+        (i + bldg_inst_range[0]) * bldg_inst_mult: s[:4] for i, s in enumerate(stats)
     }
+    # Ignore the instances that are out of the range
+    bldg_stats = {k: v for k, v in bldg_stats.items() if k < bldg_inst_range[1]}
+
     return seg_layout.astype(np.int32), bldg_stats
 
 
@@ -309,6 +312,7 @@ def get_traffic_scenarios(dataset, dataset_dirs):
 def get_latent_codes(bldg_stats, scenarios, bg_style_dim, output_device):
     bg_z = _get_z(output_device, bg_style_dim)
     building_zs = {k: _get_z(output_device) for k in bldg_stats.keys()}
+    car_zs = None
     if scenarios:
         car_zs = {
             k: _get_z(output_device)
@@ -331,11 +335,11 @@ def _get_z(device, z_dim=256):
     return torch.randn(1, z_dim, dtype=torch.float32, device=device)
 
 
-def get_image_patch(image, tl, br):
+def _get_image_patch(image, tl, br):
     return image[tl[1] : br[1], tl[0] : br[0]]
 
 
-def get_bev_map_bbox(cx, cy, patch_size):
+def _get_bev_map_bbox(cx, cy, patch_size):
     sx = cx - patch_size // 2
     sy = cy - patch_size // 2
     ex = sx + patch_size
@@ -343,31 +347,62 @@ def get_bev_map_bbox(cx, cy, patch_size):
     return {"TL": np.array([sx, sy]), "BR": np.array([ex, ey])}
 
 
-def get_part_bldg_stats(part_seg, bldg_stats, cx, cy, min_bldg_inst):
-    _buildings = np.unique(part_seg[part_seg > min_bldg_inst])
+def _bldg_class_callback(seg, cfg):
+    seg[(seg >= cfg["INST_RANGE"][0]) & (seg < cfg["INST_RANGE"][1])] = cfg[
+        "FACADE_CID"
+    ]
+    return seg
+
+
+def _car_class_callback(seg, cfg):
+    pass
+
+
+def get_hf_seg_tensor(projections, cx, cy, n_classes, cfg, output_device):
+    bev_map_bbox = _get_bev_map_bbox(cx, cy, cfg["VOL_SIZE"])
+
+    part_hf = _get_image_patch(
+        projections["TD_HF"], bev_map_bbox["TL"], bev_map_bbox["BR"]
+    )
+    part_hf = torch.from_numpy(part_hf[None, None, ...]).to(output_device)
+    part_hf = part_hf / cfg["MAX_HEIGHT"]
+
+    part_seg = _get_image_patch(
+        projections["INS_BEV"], bev_map_bbox["TL"], bev_map_bbox["BR"]
+    )
+    instances = np.unique(part_seg)
+    part_seg = torch.from_numpy(part_seg[None, None, ...]).to(output_device)
+    part_seg = cfg["CLASS_MAPPER"](part_seg, cfg)
+    part_seg = utils.helpers.masks_to_onehots(part_seg[:, 0, :, :], n_classes)
+
+    return torch.cat([part_hf, part_seg], dim=1), instances
+
+
+def get_part_bldg_stats(instances, bldg_stats, cx, cy, bldg_inst_range):
+    _buildings = instances[
+        (instances > bldg_inst_range[0]) & (instances < bldg_inst_range[1])
+    ]
     _bldg_stats = {}
     for b in _buildings:
+        # Skip the duplicated building instances
+        if b in _bldg_stats:
+            continue
+
         _bldg_stats[b] = [
             bldg_stats[b][1] - cy + bldg_stats[b][3] / 2,
             bldg_stats[b][0] - cx + bldg_stats[b][2] / 2,
         ]
+
     return _bldg_stats
 
 
-def get_hf_seg_tensor(part_hf, part_seg, n_layout_classes, bldg_cfg, output_device):
-    part_hf = torch.from_numpy(part_hf[None, None, ...]).to(output_device)
-    part_hf = part_hf / bldg_cfg["MAX_HEIGHT"]
-
-    part_seg = torch.from_numpy(part_seg[None, None, ...]).to(output_device)
-    part_seg[
-        (part_seg >= bldg_cfg["INST_RANGE"][0]) & (part_seg < bldg_cfg["INST_RANGE"][1])
-    ] = bldg_cfg["FACADE_CID"]
-    part_seg = utils.helpers.masks_to_onehots(part_seg[:, 0, :, :], n_layout_classes)
-
-    return torch.cat([part_hf, part_seg], dim=1)
+def get_part_car_stats(scenario, cx, cy):
+    # TODO
+    pass
 
 
-def get_seg_volume(projections, traffic_scenario, bev_map_bbox, vol_sizes, bldg_cfg):
+def get_seg_volume(projections, traffic_scenario, cx, cy, vol_sizes, bldg_cfg):
+    bev_map_bbox = _get_bev_map_bbox(cx, cy, vol_sizes["EXT"])
     seg_volume = torch.zeros(
         (vol_sizes["LAYOUT"], vol_sizes["LAYOUT"], bldg_cfg["MAX_HEIGHT"]),
         dtype=(
@@ -378,10 +413,13 @@ def get_seg_volume(projections, traffic_scenario, bev_map_bbox, vol_sizes, bldg_
         device=torch.device("cuda:0"),
     )
     for proj in [projections, traffic_scenario]:
+        if proj is None:
+            continue
+
         _projections = {}
         for layer in proj.values():
             for mk in ["TD_HF", "BU_HF", "INS_BEV"]:
-                _projections[mk] = get_image_patch(
+                _projections[mk] = _get_image_patch(
                     layer[mk],
                     bev_map_bbox["TL"] + vol_sizes["BLDG"],
                     bev_map_bbox["BR"] - vol_sizes["BLDG"],
@@ -506,7 +544,7 @@ def render_bg(
     z,
     vol_sizes,
     img_cfg,
-    bldg_cfg,
+    inst_cfg,
 ):
     assert hf_seg.size(2) == vol_sizes["EXT"]
     assert hf_seg.size(3) == vol_sizes["EXT"]
@@ -523,8 +561,10 @@ def render_bg(
     _voxel_id = copy.deepcopy(voxel_id)
     # Maps all building instances to the same facade ID
     _voxel_id[
-        (voxel_id >= bldg_cfg["INST_RANGE"][0]) & (voxel_id < bldg_cfg["INST_RANGE"][1])
-    ] = bldg_cfg["FACADE_CID"]
+        (
+            voxel_id >= inst_cfg["INST_RANGE"][0]
+        )  # & (voxel_id < bldg_cfg["INST_RANGE"][1])
+    ] = inst_cfg["FACADE_CID"]
     # assert (_voxel_id < CONSTANTS["LAYOUT_N_CLASSES"]).all()
     bg_img = torch.zeros(
         1,
@@ -554,7 +594,7 @@ def render_bg(
             )
             # Make road blurry
             road_mask = (
-                (_voxel_id[:, None, psy:pey, psx:pex, 0, 0] == bldg_cfg["ROAD_CID"])
+                (_voxel_id[:, None, psy:pey, psx:pex, 0, 0] == inst_cfg["ROAD_CID"])
                 .repeat(1, 3, 1, 1)
                 .float()
             )
@@ -579,23 +619,23 @@ def render_bldg(
     building_z,
     vol_sizes,
     img_cfg,
-    bldg_cfg,
+    inst_cfg,
 ):
     _voxel_id = copy.deepcopy(voxel_id)
     _curr_bldg = torch.tensor(
-        [curr_bldg_inst, curr_bldg_inst + bldg_cfg["ROOF_OFFSET"]],
+        [curr_bldg_inst, curr_bldg_inst + inst_cfg["ROOF_OFFSET"]],
         device=voxel_id.device,
     )
     _voxel_id[~torch.isin(_voxel_id, _curr_bldg)] = 0
-    _voxel_id[voxel_id == curr_bldg_inst] = bldg_cfg["FACADE_CID"]
-    _voxel_id[voxel_id == curr_bldg_inst + bldg_cfg["ROOF_OFFSET"]] = bldg_cfg[
+    _voxel_id[voxel_id == curr_bldg_inst] = inst_cfg["FACADE_CID"]
+    _voxel_id[voxel_id == curr_bldg_inst + inst_cfg["ROOF_OFFSET"]] = inst_cfg[
         "ROOF_CID"
     ]
     # assert (_voxel_id < CONSTANTS["LAYOUT_N_CLASSES"]).all()
 
     _hf_seg = copy.deepcopy(hf_seg)
     _hf_seg[hf_seg != curr_bldg_inst] = 0
-    _hf_seg[hf_seg == curr_bldg_inst] = bldg_cfg["FACADE_CID"]
+    _hf_seg[hf_seg == curr_bldg_inst] = inst_cfg["FACADE_CID"]
     _raydirs = copy.deepcopy(raydirs)
     _raydirs[_voxel_id[..., 0, 0] == 0] = 0
 
@@ -657,7 +697,7 @@ def render_bldg(
                 ).unsqueeze(dim=1)
                 roof_mask = (
                     voxel_id[:, sy:ey, sx:ex, 0, 0]
-                    == curr_bldg_inst + bldg_cfg["ROOF_OFFSET"]
+                    == curr_bldg_inst + inst_cfg["ROOF_OFFSET"]
                 ).unsqueeze(dim=1)
                 facade_img = facade_mask * get_img_without_pad(
                     output_fg, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
@@ -687,7 +727,7 @@ def render_bldg(
     return fg_img, fg_mask
 
 
-def render_static(
+def render(
     patch_size,
     hf_seg,
     voxel_id,
@@ -803,8 +843,9 @@ def main(
     # Check the instance ID for buildings and cars
     assert min(list(bldg_zs.keys())) >= get_cfg_value("BLDG_INST_RANGE", dataset)[0]
     assert max(list(bldg_zs.keys())) < get_cfg_value("BLDG_INST_RANGE", dataset)[1]
-    assert min(list(car_zs.keys())) >= get_cfg_value("CAR_INST_RANGE", dataset)[0]
-    assert max(list(car_zs.keys())) < get_cfg_value("CAR_INST_RANGE", dataset)[1]
+    if car_zs is not None:
+        assert min(list(car_zs.keys())) >= get_cfg_value("CAR_INST_RANGE", dataset)[0]
+        assert max(list(car_zs.keys())) < get_cfg_value("CAR_INST_RANGE", dataset)[1]
 
     # Generate camera trajectories
     logging.info("Generating camera poses ...")
@@ -821,42 +862,30 @@ def main(
     # Simply use image center as the patch center
     cy = projections["REST"]["TD_HF"].shape[0] // 2
     cx = projections["REST"]["TD_HF"].shape[1] // 2
-    # Generate local image patch of the height field and seg map
-    bev_map_bbox = get_bev_map_bbox(
-        cx,
-        cy,
-        get_cfg_value("VOL_SIZE/EXTEND", dataset),
-    )
-    part_hf = get_image_patch(
-        projections["REST"]["TD_HF"], bev_map_bbox["TL"], bev_map_bbox["BR"]
-    )
-    part_seg = get_image_patch(
-        projections["REST"]["INS_BEV"], bev_map_bbox["TL"], bev_map_bbox["BR"]
-    )
-    # print(part_hf.shape)    # (2880, 2880)
-    # print(part_seg.shape)   # (2880, 2880)
-
-    # Recalculate the building positions based on the current patch
-    bldg_stats = get_part_bldg_stats(
-        part_seg,
-        bldg_stats,
-        cx,
-        cy,
-        get_cfg_value("BLDG_INST_RANGE", dataset)[0],
-    )
     # Generate the concatenated height field and seg. map tensor
-    hf_seg = get_hf_seg_tensor(
-        part_hf,
-        part_seg,
+    hf_seg_static, instances = get_hf_seg_tensor(
+        projections["REST"],
+        cx,
+        cy,
         get_cfg_value("N_LAYOUT_CLASSES", dataset),
         {
             "FACADE_CID": get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
             "INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
             "MAX_HEIGHT": get_cfg_value("BLDG_MAX_HEIGHT", dataset),
+            "VOL_SIZE": get_cfg_value("VOL_SIZE/EXTEND", dataset),
+            "CLASS_MAPPER": _bldg_class_callback,
         },
         bg_model.output_device,
     )
-    # print(hf_seg.size())    # torch.Size([1, 8, 2880, 2880])
+    # Recalculate the instance positions based on the current patch
+    bldg_stats = get_part_bldg_stats(
+        instances,
+        bldg_stats,
+        cx,
+        cy,
+        get_cfg_value("BLDG_INST_RANGE", dataset),
+    )
+
     # Build seg_volume
     logging.info("Generating seg volume ...")
     VOL_SIZES = {
@@ -872,11 +901,13 @@ def main(
 
     logging.info("Caching raycast results ...")
     os.makedirs(get_cfg_value("RAYCAST_CACHE_DIR"), exist_ok=True)
-    for f_idx, (cp, tf) in enumerate(zip(tqdm(cam_poses), scenarios)):
+    for f_idx, cp in enumerate(tqdm(cam_poses)):
+        scenario = scenarios[f_idx] if scenarios else None
         seg_volume = get_seg_volume(
             projections,
-            tf["PROJECTIONS"],
-            bev_map_bbox,
+            scenario["PROJECTIONS"] if scenario else None,
+            cx,
+            cy,
             VOL_SIZES,
             {
                 "ROOF_HEIGHT": get_cfg_value("BLDG_ROOF_HEIGHT", dataset),
@@ -906,16 +937,16 @@ def main(
 
     logging.info("Rendering videos ...")
     frames = []
-    for f_idx, (cp, tf) in enumerate(zip(tqdm(cam_poses), scenarios)):
+    for f_idx, cp in enumerate(tqdm(cam_poses)):
         with open(
             os.path.join(get_cfg_value("RAYCAST_CACHE_DIR"), "%04d.pkl" % f_idx),
             "rb",
         ) as fp:
             voxel_id, depth2, raydirs, cam_origin = pickle.load(fp)
 
-        img = render_static(
+        img = render(
             patch_size,
-            hf_seg,
+            hf_seg_static,
             voxel_id,
             depth2,
             raydirs,
@@ -955,15 +986,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--bg_ckpt",
-        default=os.path.join(PROJECT_HOME, "output", "cs-bg.pth"),
+        default=os.path.join(PROJECT_HOME, "output", "bg.pth"),
     )
     parser.add_argument(
         "--bldg_ckpt",
-        default=os.path.join(PROJECT_HOME, "output", "cs-bldg.pth"),
+        default=os.path.join(PROJECT_HOME, "output", "bldg.pth"),
     )
     parser.add_argument(
         "--car_ckpt",
-        default=os.path.join(PROJECT_HOME, "output", "cs-car.pth"),
+        default=os.path.join(PROJECT_HOME, "output", "car.pth"),
     )
     parser.add_argument(
         "--city_osm_dir",
