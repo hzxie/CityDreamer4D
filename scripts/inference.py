@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-12 11:25:28
+# @Last Modified at: 2024-12-14 18:49:24
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -47,7 +47,8 @@ def get_cfg_value(key, dataset=None):
         "N_VIEWPOINTS": 24,
         "RAYCAST_CACHE_DIR": "/tmp/raycast",
         "BLDG_INST_RANGE": [10, 30000],
-        "CAR_INST_RANGE": [30000, 32768],
+        "CAR_INST_RANGE": [30000, 32767],
+        "N_CAR_CLASSES": 7,
     }
 
     if key in CONSTANTS:
@@ -63,6 +64,7 @@ def _get_dataset_cfg_value(key, dataset):
         "N_LAYOUT_CLASSES": "N_CLASSES",
         "CLASSES": "CLASSES",
         "BLDG_MAX_HEIGHT": "MAX_HEIGHT",
+        "CAR_MAX_HEIGHT": "MAX_HEIGHT",
         "VOL_SIZE/LAYOUT": "VOL_SIZE",
         "VOL_SIZE/BLDG": "BLDG.VOL_SIZE",
         "VOL_SIZE/CAR": "CAR.VOL_SIZE",
@@ -293,7 +295,7 @@ def get_traffic_scenarios(dataset, dataset_dirs):
 
     scenarios = []
     for s in sorted(os.listdir(scenario_dir)):
-        with open(os.path.join(scenario_dir, s, "scenario.pkl"), "rb") as fp:
+        with open(os.path.join(scenario_dir, s, "Metadata.pkl"), "rb") as fp:
             metadata = pickle.load(fp)
 
         scenarios.append(
@@ -347,15 +349,19 @@ def _get_bev_map_bbox(cx, cy, patch_size):
     return {"TL": np.array([sx, sy]), "BR": np.array([ex, ey])}
 
 
-def _bldg_class_callback(seg, cfg):
+def _bldg_class_callback(seg, cfg, _):
     seg[(seg >= cfg["INST_RANGE"][0]) & (seg < cfg["INST_RANGE"][1])] = cfg[
         "FACADE_CID"
     ]
     return seg
 
 
-def _car_class_callback(seg, cfg):
-    pass
+def _car_class_callback(seg, cfg, n_classes):
+    mask = (seg >= cfg["INST_RANGE"][0]) & (seg < cfg["INST_RANGE"][1])
+    seg %= n_classes - 1
+    seg += 1
+    seg[~mask] = 0
+    return seg
 
 
 def get_hf_seg_tensor(projections, cx, cy, n_classes, cfg, output_device):
@@ -372,7 +378,7 @@ def get_hf_seg_tensor(projections, cx, cy, n_classes, cfg, output_device):
     )
     instances = np.unique(part_seg)
     part_seg = torch.from_numpy(part_seg[None, None, ...]).to(output_device)
-    part_seg = cfg["CLASS_MAPPER"](part_seg, cfg)
+    part_seg = cfg["CLASS_MAPPER"](part_seg, cfg, n_classes)
     part_seg = utils.helpers.masks_to_onehots(part_seg[:, 0, :, :], n_classes)
 
     return torch.cat([part_hf, part_seg], dim=1), instances
@@ -396,9 +402,22 @@ def get_part_bldg_stats(instances, bldg_stats, cx, cy, bldg_inst_range):
     return _bldg_stats
 
 
-def get_part_car_stats(scenario, cx, cy):
-    # TODO
-    pass
+def get_part_car_stats(instances, scenario, cx, cy, car_inst_range):
+    cars = instances[(instances >= car_inst_range[0]) & (instances < car_inst_range[1])]
+    car_stats = {}
+    for values in scenario.values():
+        for s in values["TRACK"]:
+            if s["id"] in cars:
+                car_stats[s["id"]] = s
+                s["cy"] -= cy
+                s["cx"] -= cx
+                # In traffic scenario, the 0 degree is the east direction,
+                # 90 degree is the south direction. In NeRF, the 0 degree
+                # is the north direction.
+                # TODO
+                s["heading"] = 0
+
+    return car_stats
 
 
 def get_seg_volume(projections, traffic_scenario, cx, cy, vol_sizes, bldg_cfg):
@@ -560,11 +579,7 @@ def render_bg(
     blurrer = torchvision.transforms.GaussianBlur(kernel_size=3, sigma=(2, 2))
     _voxel_id = copy.deepcopy(voxel_id)
     # Maps all building instances to the same facade ID
-    _voxel_id[
-        (
-            voxel_id >= inst_cfg["INST_RANGE"][0]
-        )  # & (voxel_id < bldg_cfg["INST_RANGE"][1])
-    ] = inst_cfg["FACADE_CID"]
+    _voxel_id[voxel_id >= inst_cfg["BLDG_INST_RANGE"][0]] = inst_cfg["FACADE_CID"]
     # assert (_voxel_id < CONSTANTS["LAYOUT_N_CLASSES"]).all()
     bg_img = torch.zeros(
         1,
@@ -574,7 +589,8 @@ def render_bg(
         dtype=torch.float32,
         device=bg_model.output_device,
     )
-    # Render background patches by patch to avoid OOM
+    # bg_img[bg_img == 0] = -1
+    # Render patch by patch to avoid OOM
     for i in range(img_cfg["HEIGHT"] // patch_size[0]):
         for j in range(img_cfg["WIDTH"] // patch_size[1]):
             sy, sx = i * patch_size[0], j * patch_size[1]
@@ -582,7 +598,7 @@ def render_bg(
             psx, pex, psy, pey = get_pad_img_bbox(
                 sx, ex, sy, ey, img_cfg["HEIGHT"], img_cfg["WIDTH"], img_cfg["PADDING"]
             )
-            output_bg = bg_model(
+            output = bg_model(
                 hf_seg=hf_seg,
                 voxel_id=_voxel_id[:, psy:pey, psx:pex],
                 depth2=depth2[:, psy:pey, psx:pex],
@@ -598,9 +614,9 @@ def render_bg(
                 .repeat(1, 3, 1, 1)
                 .float()
             )
-            output_bg = blurrer(output_bg) * road_mask + output_bg * (1 - road_mask)
+            output = blurrer(output) * road_mask + output * (1 - road_mask)
             bg_img[:, :, sy:ey, sx:ex] = get_img_without_pad(
-                output_bg, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
+                output, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
             )
 
     return bg_img
@@ -608,7 +624,7 @@ def render_bg(
 
 def render_bldg(
     patch_size,
-    gancraft_fg,
+    bldg_model,
     curr_bldg_inst,
     hf_seg,
     voxel_id,
@@ -632,37 +648,34 @@ def render_bldg(
         "ROOF_CID"
     ]
     # assert (_voxel_id < CONSTANTS["LAYOUT_N_CLASSES"]).all()
-
-    _hf_seg = copy.deepcopy(hf_seg)
-    _hf_seg[hf_seg != curr_bldg_inst] = 0
-    _hf_seg[hf_seg == curr_bldg_inst] = inst_cfg["FACADE_CID"]
     _raydirs = copy.deepcopy(raydirs)
     _raydirs[_voxel_id[..., 0, 0] == 0] = 0
 
     # Crop the "hf_seg" image using the center of the target building as the reference
-    cx = vol_sizes["EXT"] // 2 - int(bldg_stats[1])
-    cy = vol_sizes["EXT"] // 2 - int(bldg_stats[0])
+    cx = vol_sizes["EXT"] // 2 + int(bldg_stats[1])
+    cy = vol_sizes["EXT"] // 2 + int(bldg_stats[0])
     sx = cx - vol_sizes["BLDG"] // 2
     ex = cx + vol_sizes["BLDG"] // 2
     sy = cy - vol_sizes["BLDG"] // 2
     ey = cy + vol_sizes["BLDG"] // 2
+    _hf_seg = copy.deepcopy(hf_seg)
     _hf_seg = hf_seg[:, :, sy:ey, sx:ex]
 
-    fg_img = torch.zeros(
+    bldg_img = torch.zeros(
         1,
         3,
         img_cfg["HEIGHT"],
         img_cfg["WIDTH"],
         dtype=torch.float32,
-        device=gancraft_fg.output_device,
+        device=bldg_model.output_device,
     )
-    fg_mask = torch.zeros(
+    bldg_mask = torch.zeros(
         1,
         1,
         img_cfg["HEIGHT"],
         img_cfg["WIDTH"],
         dtype=torch.float32,
-        device=gancraft_fg.output_device,
+        device=bldg_model.output_device,
     )
     # Prevent some buildings are out of bound.
     # THIS SHOULD NEVER HAPPEN AGAIN.
@@ -672,7 +685,7 @@ def render_bldg(
     # ):
     #     return fg_img, fg_mask
 
-    # Render foreground patches by patch to avoid OOM
+    # Render patch by patch to avoid OOM
     for i in range(img_cfg["HEIGHT"] // patch_size[0]):
         for j in range(img_cfg["WIDTH"] // patch_size[1]):
             sy, sx = i * patch_size[0], j * patch_size[1]
@@ -680,9 +693,8 @@ def render_bldg(
             psx, pex, psy, pey = get_pad_img_bbox(
                 sx, ex, sy, ey, img_cfg["HEIGHT"], img_cfg["WIDTH"], img_cfg["PADDING"]
             )
-
             if torch.count_nonzero(_raydirs[:, sy:ey, sx:ex]) > 0:
-                output_fg = gancraft_fg(
+                output_fg = bldg_model(
                     _hf_seg,
                     _voxel_id[:, psy:pey, psx:pex],
                     depth2[:, psy:pey, psx:pex],
@@ -719,68 +731,168 @@ def render_bldg(
                     pey,
                     img_cfg["PADDING"],
                 )
-                fg_mask[:, :, sy:ey, sx:ex] = torch.logical_or(facade_mask, roof_mask)
-                fg_img[:, :, sy:ey, sx:ex] = (
+                bldg_mask[:, :, sy:ey, sx:ex] = torch.logical_or(facade_mask, roof_mask)
+                bldg_img[:, :, sy:ey, sx:ex] = (
                     facade_img * facade_mask + roof_img * roof_mask
                 )
 
-    return fg_img, fg_mask
+    return bldg_img, bldg_mask
 
 
-def render(
+def render_car(
     patch_size,
+    car_model,
+    curr_car_inst,
     hf_seg,
     voxel_id,
     depth2,
     raydirs,
     cam_origin,
-    bg_model,
-    bldg_model,
-    bldg_stats,
-    bg_z,
-    bldg_zs,
+    car_stats,
+    car_z,
     vol_sizes,
     img_cfg,
-    bldg_cfg,
+    inst_cfg,
+):
+    car_class_id = (curr_car_inst % inst_cfg["N_CAR_CLASSES"]) + 1
+    _voxel_id = copy.deepcopy(voxel_id)
+    _voxel_id[voxel_id != curr_car_inst] = 0
+    _voxel_id[voxel_id == curr_car_inst] = car_class_id
+    # assert (_voxel_id < CONSTANTS["N_CAR_CLASSES"]).all()
+    _raydirs = copy.deepcopy(raydirs)
+    _raydirs[_voxel_id[..., 0, 0] == 0] = 0
+
+    # Crop the "hf_seg" image using the center of the target car as the reference
+    cx = vol_sizes["EXT"] // 2 + int(car_stats["cx"])
+    cy = vol_sizes["EXT"] // 2 + int(car_stats["cy"])
+    sx = cx - vol_sizes["CAR"] // 2
+    ex = cx + vol_sizes["CAR"] // 2
+    sy = cy - vol_sizes["CAR"] // 2
+    ey = cy + vol_sizes["CAR"] // 2
+    _hf_seg = copy.deepcopy(hf_seg)
+    _hf_seg = hf_seg[:, :, sy:ey, sx:ex]
+
+    car_img = torch.zeros(
+        1,
+        3,
+        img_cfg["HEIGHT"],
+        img_cfg["WIDTH"],
+        dtype=torch.float32,
+        device=car_model.output_device,
+    )
+    car_mask = torch.zeros(
+        1,
+        1,
+        img_cfg["HEIGHT"],
+        img_cfg["WIDTH"],
+        dtype=torch.float32,
+        device=car_model.output_device,
+    )
+
+    # Render patch by patch to avoid OOM
+    for i in range(img_cfg["HEIGHT"] // patch_size[0]):
+        for j in range(img_cfg["WIDTH"] // patch_size[1]):
+            sy, sx = i * patch_size[0], j * patch_size[1]
+            ey, ex = sy + patch_size[0], sx + patch_size[1]
+            psx, pex, psy, pey = get_pad_img_bbox(
+                sx, ex, sy, ey, img_cfg["HEIGHT"], img_cfg["WIDTH"], img_cfg["PADDING"]
+            )
+            if torch.count_nonzero(_raydirs[:, sy:ey, sx:ex]) > 0:
+                output = car_model(
+                    _hf_seg,
+                    _voxel_id[:, psy:pey, psx:pex],
+                    depth2[:, psy:pey, psx:pex],
+                    _raydirs[:, psy:pey, psx:pex],
+                    cam_origin,
+                    ftp_stats=torch.from_numpy(
+                        np.array([car_stats["cy"], car_stats["cx"]])
+                    ).unsqueeze(dim=0),
+                    z=car_z,
+                    deterministic=True,
+                )
+                _mask = (voxel_id[:, sy:ey, sx:ex, 0, 0] == curr_car_inst).unsqueeze(
+                    dim=1
+                )
+                car_img[:, :, sy:ey, sx:ex] = (
+                    get_img_without_pad(
+                        output, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
+                    )
+                    * _mask
+                )
+                car_mask[:, :, sy:ey, sx:ex] = _mask
+
+    return car_img, car_mask
+
+
+def render(
+    patch_size, hf_segs, raycast, models, stats, zs, vol_sizes, img_cfg, inst_cfg
 ):
     buildings = torch.unique(
-        voxel_id[
-            (voxel_id >= bldg_cfg["INST_RANGE"][0])
-            & (voxel_id < bldg_cfg["INST_RANGE"][1])
+        raycast["VOXEL_ID"][
+            (raycast["VOXEL_ID"] >= inst_cfg["BLDG_INST_RANGE"][0])
+            & (raycast["VOXEL_ID"] < inst_cfg["BLDG_INST_RANGE"][1])
         ]
     )
-    buildings = buildings[buildings % bldg_cfg["MULTIPLIER"] == 0]
+    buildings = buildings[buildings % inst_cfg["BLDG_MULTIPLIER"] == 0]
+
+    cars = []
+    if stats["CAR"] is not None:
+        cars = torch.unique(
+            raycast["VOXEL_ID"][
+                (raycast["VOXEL_ID"] >= inst_cfg["CAR_INST_RANGE"][0])
+                & (raycast["VOXEL_ID"] < inst_cfg["CAR_INST_RANGE"][1])
+            ]
+        )
+
     with torch.no_grad():
         bg_img = render_bg(
             patch_size,
-            bg_model,
-            hf_seg,
-            voxel_id,
-            depth2,
-            raydirs,
-            cam_origin,
-            bg_z,
+            models["BG"],
+            hf_segs["STATIC"],
+            raycast["VOXEL_ID"],
+            raycast["DEPTH2"],
+            raycast["RAYDIRS"],
+            raycast["CAM_ORIGIN"],
+            zs["BG"],
             vol_sizes,
             img_cfg,
-            bldg_cfg,
+            inst_cfg,
         )
         for b in buildings:
-            fg_img, fg_mask = render_bldg(
+            bldg_img, bldg_mask = render_bldg(
                 patch_size,
-                bldg_model,
+                models["BLDG"],
                 b.item(),
-                hf_seg,
-                voxel_id,
-                depth2,
-                raydirs,
-                cam_origin,
-                bldg_stats[b.item()],
-                bldg_zs[b.item()],
+                hf_segs["STATIC"],
+                raycast["VOXEL_ID"],
+                raycast["DEPTH2"],
+                raycast["RAYDIRS"],
+                raycast["CAM_ORIGIN"],
+                stats["BLDG"][b.item()],
+                zs["BLDG"][b.item()],
                 vol_sizes,
                 img_cfg,
-                bldg_cfg,
+                inst_cfg,
             )
-            bg_img = bg_img * (1 - fg_mask) + fg_img * fg_mask
+            bg_img = bg_img * (1 - bldg_mask) + bldg_img * bldg_mask
+
+        for c in cars:
+            car_img, car_mask = render_car(
+                patch_size,
+                models["CAR"],
+                c.item(),
+                hf_segs["DYNAMIC"],
+                raycast["VOXEL_ID"],
+                raycast["DEPTH2"],
+                raycast["RAYDIRS"],
+                raycast["CAM_ORIGIN"],
+                stats["CAR"][c.item()],
+                zs["CAR"][c.item()],
+                vol_sizes,
+                img_cfg,
+                inst_cfg,
+            )
+            bg_img = bg_img * (1 - car_mask) + car_img * car_mask
 
     return bg_img
 
@@ -849,8 +961,8 @@ def main(
 
     # Generate camera trajectories
     logging.info("Generating camera poses ...")
-    radius = 2048  # np.random.randint(128, 512)
-    altitude = 1024  # np.random.randint(256, 512)
+    radius = 1024  # np.random.randint(128, 512)
+    altitude = 512  # np.random.randint(256, 512)
     logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
     cam_poses = get_orbit_camera_positions(
         radius,
@@ -863,7 +975,7 @@ def main(
     cy = projections["REST"]["TD_HF"].shape[0] // 2
     cx = projections["REST"]["TD_HF"].shape[1] // 2
     # Generate the concatenated height field and seg. map tensor
-    hf_seg_static, instances = get_hf_seg_tensor(
+    hf_seg_static, static_inst = get_hf_seg_tensor(
         projections["REST"],
         cx,
         cy,
@@ -879,7 +991,7 @@ def main(
     )
     # Recalculate the instance positions based on the current patch
     bldg_stats = get_part_bldg_stats(
-        instances,
+        static_inst,
         bldg_stats,
         cx,
         cy,
@@ -891,6 +1003,7 @@ def main(
     VOL_SIZES = {
         "LAYOUT": get_cfg_value("VOL_SIZE/LAYOUT", dataset),
         "BLDG": get_cfg_value("VOL_SIZE/BLDG", dataset),
+        "CAR": get_cfg_value("VOL_SIZE/CAR", dataset),
         "EXT": get_cfg_value("VOL_SIZE/EXTEND", dataset),
     }
     IMG_CFG = {
@@ -944,27 +1057,66 @@ def main(
         ) as fp:
             voxel_id, depth2, raydirs, cam_origin = pickle.load(fp)
 
+        scenario = scenarios[f_idx] if scenarios else None
+        if scenario is not None:
+            hf_seg_dynamic, dyn_inst = get_hf_seg_tensor(
+                scenario["PROJECTIONS"]["REST"],
+                cx,
+                cy,
+                get_cfg_value("N_CAR_CLASSES", dataset),
+                {
+                    "INST_RANGE": get_cfg_value("CAR_INST_RANGE", dataset),
+                    "MAX_HEIGHT": get_cfg_value("CAR_MAX_HEIGHT", dataset),
+                    "VOL_SIZE": get_cfg_value("VOL_SIZE/EXTEND", dataset),
+                    "CLASS_MAPPER": _car_class_callback,
+                },
+                bg_model.output_device,
+            )
+            car_stats = get_part_car_stats(
+                dyn_inst,
+                scenario["METADATA"],
+                cx,
+                cy,
+                get_cfg_value("CAR_INST_RANGE", dataset),
+            )
+
         img = render(
             patch_size,
-            hf_seg_static,
-            voxel_id,
-            depth2,
-            raydirs,
-            cam_origin,
-            bg_model,
-            bldg_model,
-            bldg_stats,
-            bg_z,
-            bldg_zs,
+            {
+                "STATIC": hf_seg_static,
+                "DYNAMIC": hf_seg_dynamic if scenario else None,
+            },
+            {
+                "VOXEL_ID": voxel_id,
+                "DEPTH2": depth2,
+                "RAYDIRS": raydirs,
+                "CAM_ORIGIN": cam_origin,
+            },
+            {
+                "BG": bg_model,
+                "BLDG": bldg_model,
+                "CAR": car_model if scenario else None,
+            },
+            {
+                "BLDG": bldg_stats,
+                "CAR": car_stats if scenario else None,
+            },
+            {
+                "BG": bg_z,
+                "BLDG": bldg_zs,
+                "CAR": car_zs if scenario else None,
+            },
             VOL_SIZES,
             IMG_CFG,
             {
-                "INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
-                "MULTIPLIER": get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
+                "BLDG_INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
+                "BLDG_MULTIPLIER": get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
                 "ROAD_CID": get_cfg_value("CLASSES", dataset)["ROAD"],
                 "FACADE_CID": get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
                 "ROOF_CID": get_cfg_value("CLASSES", dataset)["BLDG_ROOF"],
                 "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET", dataset),
+                "CAR_INST_RANGE": get_cfg_value("CAR_INST_RANGE", dataset),
+                "N_CAR_CLASSES": get_cfg_value("N_CAR_CLASSES", dataset) - 1,
             },
         )
         img = (utils.helpers.tensor_to_image(img, "RGB") * 255).astype(np.uint8)
@@ -1002,7 +1154,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--city_sample_dir",
-        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City02"),
+        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City00"),
     )
     parser.add_argument(
         "--patch_height",

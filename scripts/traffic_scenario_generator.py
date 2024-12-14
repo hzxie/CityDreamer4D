@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-12 09:43:04
+# @Last Modified at: 2024-12-13 22:19:22
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -1194,7 +1194,7 @@ def main(
     )
     for idx, (s, tb) in enumerate(zip(scenarios, traffic_bevs)):
         os.makedirs(os.path.join(scenario_dir, "%04d" % idx), exist_ok=True)
-        with open(os.path.join(scenario_dir, "%04d" % idx, "scenario.pkl"), "wb") as fp:
+        with open(os.path.join(scenario_dir, "%04d" % idx, "Metadata.pkl"), "wb") as fp:
             pickle.dump(s, fp)
 
         for k, v in tb.items():
