@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 21:27:22
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 13:53:45
+# @Last Modified at: 2024-12-16 15:50:38
 # @Email:  root@haozhexie.com
 
 
@@ -16,7 +16,7 @@ import torch
 import os
 import sys
 
-import core.gancraft
+import core
 import utils.distributed
 
 from pprint import pprint
@@ -49,14 +49,6 @@ def get_args_from_command_line():
         "--dataset",
         dest="dataset",
         help="The dataset name to train or test.",
-        default=None,
-        type=str,
-    )
-    parser.add_argument(
-        "-n",
-        "--network",
-        dest="network",
-        help="The network name to train or test.",
         default=None,
         type=str,
     )
@@ -111,8 +103,6 @@ def main():
         cfg.CONST.EXP_NAME = args.exp_name
     if args.dataset is not None:
         cfg.CONST.DATASET = args.dataset
-    if args.network is not None:
-        cfg.CONST.NETWORK = args.network
     if args.ckpt is not None:
         cfg.CONST.CKPT = args.ckpt
     if args.run_id is not None:
@@ -132,19 +122,13 @@ def main():
 
     # Start train/test processes
     if not args.test:
-        if cfg.CONST.NETWORK == "GANCraft":
-            core.gancraft.train(cfg)
-        else:
-            raise Exception("Unknown network: %s" % cfg.CONST.NETWORK)
+        core.train(cfg)
     else:
         if "CKPT" not in cfg.CONST or not os.path.exists(cfg.CONST.CKPT):
             logging.error("Please specify the file path of checkpoint.")
             sys.exit(2)
 
-        if cfg.CONST.NETWORK == "GANCraft":
-            core.gancraft.test(cfg)
-        else:
-            raise Exception("Unknown network: %s" % cfg.CONST.NETWORK)
+        core.test(cfg)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-14 18:49:24
+# @Last Modified at: 2024-12-16 15:51:49
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -414,7 +414,7 @@ def get_part_car_stats(instances, scenario, cx, cy, car_inst_range):
                 # In traffic scenario, the 0 degree is the east direction,
                 # 90 degree is the south direction. In NeRF, the 0 degree
                 # is the north direction.
-                # TODO
+                # TODO: Change
                 s["heading"] = 0
 
     return car_stats
@@ -448,20 +448,20 @@ def get_seg_volume(projections, traffic_scenario, cx, cy, vol_sizes, bldg_cfg):
                     vol_sizes["LAYOUT"],
                 )
 
-        assert np.min(_projections["TD_HF"]) >= 0
-        assert np.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
-        seg_volume = extensions.footprint_extruder.extrude_footprint(
-            seg_volume,
-            torch.from_numpy(_projections["INS_BEV"]).to(seg_volume.device),
-            torch.from_numpy(_projections["TD_HF"]).to(seg_volume.device),
-            torch.from_numpy(_projections["BU_HF"]).to(seg_volume.device),
-            0,
-            bldg_cfg["ROOF_HEIGHT"],
-            0,
-            bldg_cfg["ROOF_OFFSET"],
-            bldg_cfg["INST_RANGE"][0],
-            bldg_cfg["INST_RANGE"][1],
-        )
+            assert np.min(_projections["TD_HF"]) >= 0
+            assert np.max(_projections["TD_HF"]) < bldg_cfg["MAX_HEIGHT"]
+            seg_volume = extensions.footprint_extruder.extrude_footprint(
+                seg_volume,
+                torch.from_numpy(_projections["INS_BEV"]).to(seg_volume.device),
+                torch.from_numpy(_projections["TD_HF"]).to(seg_volume.device),
+                torch.from_numpy(_projections["BU_HF"]).to(seg_volume.device),
+                0,
+                bldg_cfg["ROOF_HEIGHT"],
+                0,
+                bldg_cfg["ROOF_OFFSET"],
+                bldg_cfg["INST_RANGE"][0],
+                bldg_cfg["INST_RANGE"][1],
+            )
 
     logging.debug("The shape of SegVolume: %s" % (seg_volume.size(),))
     # print(seg_volume.size())  # torch.Size([1536, 1536, 640])
@@ -788,6 +788,8 @@ def render_car(
         dtype=torch.float32,
         device=car_model.output_device,
     )
+    if _hf_seg.size(2) != vol_sizes["CAR"] or _hf_seg.size(3) != vol_sizes["CAR"]:
+        return car_img, car_mask
 
     # Render patch by patch to avoid OOM
     for i in range(img_cfg["HEIGHT"] // patch_size[0]):
@@ -805,7 +807,7 @@ def render_car(
                     _raydirs[:, psy:pey, psx:pex],
                     cam_origin,
                     ftp_stats=torch.from_numpy(
-                        np.array([car_stats["cy"], car_stats["cx"]])
+                        np.array([car_stats["cy"], car_stats["cx"], car_stats["cz"]])
                     ).unsqueeze(dim=0),
                     z=car_z,
                     deterministic=True,
@@ -961,8 +963,8 @@ def main(
 
     # Generate camera trajectories
     logging.info("Generating camera poses ...")
-    radius = 1024  # np.random.randint(128, 512)
-    altitude = 512  # np.random.randint(256, 512)
+    radius = np.random.randint(128, 512)
+    altitude = np.random.randint(256, 512)
     logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
     cam_poses = get_orbit_camera_positions(
         radius,
@@ -1057,9 +1059,9 @@ def main(
         ) as fp:
             voxel_id, depth2, raydirs, cam_origin = pickle.load(fp)
 
-        scenario = scenarios[f_idx] if scenarios else None
+        scenario = copy.deepcopy(scenarios[f_idx]) if scenarios else None
         if scenario is not None:
-            hf_seg_dynamic, dyn_inst = get_hf_seg_tensor(
+            hf_seg_dynamic, _ = get_hf_seg_tensor(
                 scenario["PROJECTIONS"]["REST"],
                 cx,
                 cy,
@@ -1073,7 +1075,7 @@ def main(
                 bg_model.output_device,
             )
             car_stats = get_part_car_stats(
-                dyn_inst,
+                torch.unique(voxel_id).cpu().numpy(),
                 scenario["METADATA"],
                 cx,
                 cy,
@@ -1154,7 +1156,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--city_sample_dir",
-        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City00"),
+        default=os.path.join(PROJECT_HOME, "data", "city-sample", "City02"),
     )
     parser.add_argument(
         "--patch_height",

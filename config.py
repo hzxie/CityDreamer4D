@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-02 16:09:15
+# @Last Modified at: 2024-12-16 15:49:45
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -66,7 +66,6 @@ cfg.DATASETS.CITY_SAMPLE.CAR.INS_RANGE           = [5000, 16384]
 cfg.CONST                                        = EasyDict()
 cfg.CONST.EXP_NAME                               = ""
 cfg.CONST.N_WORKERS                              = 8
-cfg.CONST.NETWORK                                = "GANCraft"
 cfg.CONST.DATASET                                = "GOOGLE_EARTH"
 
 #

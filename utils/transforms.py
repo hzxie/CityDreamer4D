@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 14:18:01
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-10-22 21:00:25
+# @Last Modified at: 2024-12-16 15:33:22
 # @Email:  root@haozhexie.com
 
 import cv2
@@ -224,7 +224,7 @@ class BevCrop(object):
                 dx = dx - cx + w // 2
                 dy = dy - cy + h // 2
 
-            data["ftp_stats"] = torch.Tensor([dy, dx, h, w, inst])
+            data["ftp_stats"] = torch.Tensor([dy, dx])  # h, w, inst are omitted
             cx = int(cx + data["ftp_stats"][1])
             cy = int(cy + data["ftp_stats"][0])
 

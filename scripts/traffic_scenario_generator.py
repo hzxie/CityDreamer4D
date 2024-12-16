@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-13 22:19:22
+# @Last Modified at: 2024-12-16 14:40:35
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -962,7 +962,7 @@ def _get_vehicle_tilt(cx, cy, heading, height_map):
     HALF_VEHICLE_WIDTH = VEHICLE_LENGTH // 2
 
     cz = height_map[cy, cx] - BASE_HEIGHT
-    cz = cz if cz < 0 else 0
+    cz = cz if cz > 0 else 0
     head_pt = (
         round(cx + HALF_VEHICLE_WIDTH * math.cos(math.radians(heading))),
         round(cy + HALF_VEHICLE_WIDTH * math.sin(math.radians(heading))),
