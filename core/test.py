@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:46:36
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 14:01:33
+# @Last Modified at: 2024-12-19 10:37:11
 # @Email:  root@haozhexie.com
 
 import logging
@@ -73,7 +73,7 @@ def test(cfg, test_data_loader=None, gancraft=None):
             footage = utils.helpers.var_or_cuda(data["footage"], gancraft.device)
             ftp_stats = None if "ftp_stats" not in data else data["ftp_stats"]
 
-            fake_imgs = gancraft(
+            fake_imgs, _ = gancraft(
                 hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
             )
             loss = l1_loss(fake_imgs, footage)

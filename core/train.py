@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-08-25 07:33:59
+# @Last Modified at: 2024-12-19 10:37:49
 # @Email:  root@haozhexie.com
 
 import copy
@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 import shutil
 
-import core.gancraft.test
+import core.test
 import losses.gan
 import losses.kl
 import losses.perceptual
@@ -215,7 +215,7 @@ def train(cfg):
                 utils.helpers.requires_grad(gancraft_d, True)
 
                 with torch.no_grad():
-                    fake_imgs = gancraft_g(
+                    fake_imgs, _ = gancraft_g(
                         hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
                     )
                     fake_imgs = fake_imgs.detach()
@@ -248,7 +248,7 @@ def train(cfg):
                 utils.helpers.requires_grad(gancraft_d, False)
                 utils.helpers.requires_grad(gancraft_g, True)
 
-            fake_imgs = gancraft_g(
+            fake_imgs, _ = gancraft_g(
                 hf_seg, voxel_id, depth2, raydirs, cam_origin, ftp_stats
             )
             _l1_loss = l1_loss(fake_imgs * masks, footages * masks)
@@ -350,7 +350,7 @@ def train(cfg):
             )
 
         # Evaluate the current model
-        test_losses, key_frames = core.gancraft.test(
+        test_losses, key_frames = core.test(
             cfg,
             val_data_loader,
             gancraft_g_ema if cfg.TRAIN.GANCRAFT.EMA_ENABLED else gancraft_g,

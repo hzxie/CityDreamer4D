@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-16 15:51:49
+# @Last Modified at: 2024-12-19 13:39:17
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -169,6 +169,8 @@ def get_models(dataset, bg_ckpt, bldg_ckpt, car_ckpt):
     car_model = None
     if car_ckpt is not None:
         car_model = _get_model("%s_CAR" % dataset, car_ckpt)
+        if car_model is not None:
+            car_model.module.center_offset = 0
 
     return bg_model, bldg_model, car_model
 
@@ -204,6 +206,7 @@ def _get_projections(projection_dir, layers, maps):
             ).astype(np.int16)
             for mk in maps
         }
+
     return projections
 
 
@@ -222,6 +225,7 @@ def get_city_sample_layout(city_sample_dir, bldg_inst_range):
             for k, v in ftp_stats.items()
             if k >= bldg_inst_range[0] and k < bldg_inst_range[1]
         }
+
     return projections, ftp_stats
 
 
@@ -308,6 +312,7 @@ def get_traffic_scenarios(dataset, dataset_dirs):
                 ),
             }
         )
+
     return scenarios
 
 
@@ -356,31 +361,30 @@ def _bldg_class_callback(seg, cfg, _):
     return seg
 
 
-def _car_class_callback(seg, cfg, n_classes):
-    mask = (seg >= cfg["INST_RANGE"][0]) & (seg < cfg["INST_RANGE"][1])
-    seg %= n_classes - 1
-    seg += 1
-    seg[~mask] = 0
-    return seg
-
-
 def get_hf_seg_tensor(projections, cx, cy, n_classes, cfg, output_device):
-    bev_map_bbox = _get_bev_map_bbox(cx, cy, cfg["VOL_SIZE"])
+    bev_map_bbox = None
+    if cx is not None and cy is not None:
+        bev_map_bbox = _get_bev_map_bbox(cx, cy, cfg["VOL_SIZE"])
 
-    part_hf = _get_image_patch(
-        projections["TD_HF"], bev_map_bbox["TL"], bev_map_bbox["BR"]
-    )
+    part_hf = projections["TD_HF"]
+    if bev_map_bbox is not None:
+        part_hf = _get_image_patch(
+            projections["TD_HF"], bev_map_bbox["TL"], bev_map_bbox["BR"]
+        )
     part_hf = torch.from_numpy(part_hf[None, None, ...]).to(output_device)
     part_hf = part_hf / cfg["MAX_HEIGHT"]
 
-    part_seg = _get_image_patch(
-        projections["INS_BEV"], bev_map_bbox["TL"], bev_map_bbox["BR"]
-    )
+    part_seg = projections["INS_BEV"]
+    if bev_map_bbox is not None:
+        part_seg = _get_image_patch(
+            projections["INS_BEV"], bev_map_bbox["TL"], bev_map_bbox["BR"]
+        )
     instances = np.unique(part_seg)
     part_seg = torch.from_numpy(part_seg[None, None, ...]).to(output_device)
-    part_seg = cfg["CLASS_MAPPER"](part_seg, cfg, n_classes)
-    part_seg = utils.helpers.masks_to_onehots(part_seg[:, 0, :, :], n_classes)
+    if "CLASS_MAPPER" in cfg:
+        part_seg = cfg["CLASS_MAPPER"](part_seg, cfg, n_classes)
 
+    part_seg = utils.helpers.masks_to_onehots(part_seg[:, 0, :, :], n_classes)
     return torch.cat([part_hf, part_seg], dim=1), instances
 
 
@@ -411,11 +415,11 @@ def get_part_car_stats(instances, scenario, cx, cy, car_inst_range):
                 car_stats[s["id"]] = s
                 s["cy"] -= cy
                 s["cx"] -= cx
+                s["cz"] = s["cz"] if "cz" in s else 0
                 # In traffic scenario, the 0 degree is the east direction,
                 # 90 degree is the south direction. In NeRF, the 0 degree
                 # is the north direction.
-                # TODO: Change
-                s["heading"] = 0
+                s["heading"] = (s["heading"] + 90) % 360
 
     return car_stats
 
@@ -484,7 +488,6 @@ def get_orbit_camera_positions(radius, altitude, vol_size_layout, n_viewpoints):
                 "cam_look_at": cam_look_at,
             }
         )
-
     return camera_positions
 
 
@@ -552,6 +555,78 @@ def get_img_without_pad(img, sx, ex, sy, ey, psx, pex, psy, pey, img_padding):
     ]
 
 
+def render(
+    patch_size, hf_segs, raycast, models, stats, zs, vol_sizes, img_cfg, other_cfg
+):
+    bldg_seg = raycast["VOXEL_ID"][0, :, :, 0, 0]
+    buildings = torch.unique(
+        bldg_seg[
+            (bldg_seg >= other_cfg["BLDG_INST_RANGE"][0])
+            & (bldg_seg < other_cfg["BLDG_INST_RANGE"][1])
+        ]
+    )
+    buildings = buildings[buildings % other_cfg["BLDG_MULTIPLIER"] == 0]
+
+    cars = []
+    if stats["CAR"] is not None:
+        car_seg = raycast["VOXEL_ID"][0, :, :, 0, 0]
+        cars = torch.unique(
+            car_seg[
+                (car_seg >= other_cfg["CAR_INST_RANGE"][0])
+                & (car_seg < other_cfg["CAR_INST_RANGE"][1])
+            ]
+        )
+
+    with torch.no_grad():
+        bg_img = render_bg(
+            patch_size,
+            models["BG"],
+            hf_segs["STATIC"],
+            raycast["VOXEL_ID"],
+            raycast["DEPTH2"],
+            raycast["RAYDIRS"],
+            raycast["CAM_ORIGIN"],
+            zs["BG"],
+            vol_sizes,
+            img_cfg,
+            other_cfg,
+        )
+        for b in buildings:
+            bldg_img, bldg_mask = render_bldg(
+                patch_size,
+                models["BLDG"],
+                b.item(),
+                hf_segs["STATIC"],
+                raycast["VOXEL_ID"],
+                raycast["DEPTH2"],
+                raycast["RAYDIRS"],
+                raycast["CAM_ORIGIN"],
+                stats["BLDG"][b.item()],
+                zs["BLDG"][b.item()],
+                vol_sizes,
+                img_cfg,
+                other_cfg,
+            )
+            bg_img = bg_img * (1 - bldg_mask) + bldg_img * bldg_mask
+
+        for c in cars:
+            car_img, car_mask = render_car(
+                patch_size,
+                models["CAR"],
+                c.item(),
+                raycast["VOXEL_ID"],
+                raycast["CAM_ORIGIN"],
+                stats["CAR"][c.item()],
+                zs["CAR"][c.item()],
+                vol_sizes,
+                img_cfg,
+                other_cfg,
+            )
+            bg_img = bg_img * (1 - car_mask) + car_img * car_mask
+
+    return bg_img
+
+
 def render_bg(
     patch_size,
     bg_model,
@@ -580,6 +655,7 @@ def render_bg(
     _voxel_id = copy.deepcopy(voxel_id)
     # Maps all building instances to the same facade ID
     _voxel_id[voxel_id >= inst_cfg["BLDG_INST_RANGE"][0]] = inst_cfg["FACADE_CID"]
+    _voxel_id[voxel_id >= inst_cfg["CAR_INST_RANGE"][0]] = inst_cfg["ROAD_CID"]
     # assert (_voxel_id < CONSTANTS["LAYOUT_N_CLASSES"]).all()
     bg_img = torch.zeros(
         1,
@@ -598,7 +674,7 @@ def render_bg(
             psx, pex, psy, pey = get_pad_img_bbox(
                 sx, ex, sy, ey, img_cfg["HEIGHT"], img_cfg["WIDTH"], img_cfg["PADDING"]
             )
-            output = bg_model(
+            output, _ = bg_model(
                 hf_seg=hf_seg,
                 voxel_id=_voxel_id[:, psy:pey, psx:pex],
                 depth2=depth2[:, psy:pey, psx:pex],
@@ -694,7 +770,7 @@ def render_bldg(
                 sx, ex, sy, ey, img_cfg["HEIGHT"], img_cfg["WIDTH"], img_cfg["PADDING"]
             )
             if torch.count_nonzero(_raydirs[:, sy:ey, sx:ex]) > 0:
-                output_fg = bldg_model(
+                output, _ = bldg_model(
                     _hf_seg,
                     _voxel_id[:, psy:pey, psx:pex],
                     depth2[:, psy:pey, psx:pex],
@@ -712,7 +788,7 @@ def render_bldg(
                     == curr_bldg_inst + inst_cfg["ROOF_OFFSET"]
                 ).unsqueeze(dim=1)
                 facade_img = facade_mask * get_img_without_pad(
-                    output_fg, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
+                    output, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
                 )
                 # Make roof blurry
                 # output_fg = F.interpolate(
@@ -720,7 +796,7 @@ def render_bldg(
                 #     scale_factor=4 / 3,
                 # ),
                 roof_img = roof_mask * get_img_without_pad(
-                    output_fg,
+                    output,
                     sx,
                     ex,
                     sy,
@@ -743,34 +819,60 @@ def render_car(
     patch_size,
     car_model,
     curr_car_inst,
-    hf_seg,
-    voxel_id,
-    depth2,
-    raydirs,
-    cam_origin,
+    g_voxel_id,
+    g_cam_origin,
     car_stats,
     car_z,
     vol_sizes,
     img_cfg,
-    inst_cfg,
+    other_cfg,
 ):
-    car_class_id = (curr_car_inst % inst_cfg["N_CAR_CLASSES"]) + 1
-    _voxel_id = copy.deepcopy(voxel_id)
-    _voxel_id[voxel_id != curr_car_inst] = 0
-    _voxel_id[voxel_id == curr_car_inst] = car_class_id
-    # assert (_voxel_id < CONSTANTS["N_CAR_CLASSES"]).all()
-    _raydirs = copy.deepcopy(raydirs)
-    _raydirs[_voxel_id[..., 0, 0] == 0] = 0
+    g_mask = g_voxel_id[..., 0, 0] == curr_car_inst
+    # Convert to a local coordinate system of size 32^3
+    offsets = {
+        "x": -vol_sizes["LAYOUT"] // 2 - car_stats["cx"] + vol_sizes["CAR"] // 2,
+        "y": -vol_sizes["LAYOUT"] // 2 - car_stats["cy"] + vol_sizes["CAR"] // 2,
+        "z": -car_stats["cz"],
+    }
+    g_cam_look_at = {
+        "x": vol_sizes["LAYOUT"] // 2 - 1,
+        "y": vol_sizes["LAYOUT"] // 2 - 1,
+        "z": 0,
+    }
+    cam_pose = {
+        "cam_position": {
+            "x": g_cam_origin[0][1] + offsets["x"],
+            "y": g_cam_origin[0][0] + offsets["y"],
+            "z": g_cam_origin[0][2] + offsets["z"],
+        },
+        "cam_look_at": {
+            "x": g_cam_look_at["x"] + offsets["x"],
+            "y": g_cam_look_at["y"] + offsets["y"],
+            "z": g_cam_look_at["z"] + offsets["z"],
+        },
+    }
+    pivot = {"x": vol_sizes["CAR"] // 2, "y": vol_sizes["CAR"] // 2}
+    cam_pose["cam_position"] = _get_rotated_coordinates(
+        cam_pose["cam_position"], pivot, car_stats["heading"]
+    )
+    cam_pose["cam_look_at"] = _get_rotated_coordinates(
+        cam_pose["cam_look_at"], pivot, car_stats["heading"]
+    )
 
-    # Crop the "hf_seg" image using the center of the target car as the reference
-    cx = vol_sizes["EXT"] // 2 + int(car_stats["cx"])
-    cy = vol_sizes["EXT"] // 2 + int(car_stats["cy"])
-    sx = cx - vol_sizes["CAR"] // 2
-    ex = cx + vol_sizes["CAR"] // 2
-    sy = cy - vol_sizes["CAR"] // 2
-    ey = cy + vol_sizes["CAR"] // 2
-    _hf_seg = copy.deepcopy(hf_seg)
-    _hf_seg = hf_seg[:, :, sy:ey, sx:ex]
+    hf_seg, volume = _get_car_volume(
+        curr_car_inst,
+        other_cfg["N_CAR_CLASSES"],
+        other_cfg["CAR_BEV_FILE"],
+        vol_sizes["CAR"],
+        car_model.output_device,
+    )
+    voxel_id, depth2, raydirs, cam_origin = get_voxel_intersection_perspective(
+        volume,
+        cam_pose,
+        img_cfg,
+        img_cfg["VFOV"],
+        other_cfg["N_VOXEL_SAMPLES"],
+    )
 
     car_img = torch.zeros(
         1,
@@ -788,9 +890,6 @@ def render_car(
         dtype=torch.float32,
         device=car_model.output_device,
     )
-    if _hf_seg.size(2) != vol_sizes["CAR"] or _hf_seg.size(3) != vol_sizes["CAR"]:
-        return car_img, car_mask
-
     # Render patch by patch to avoid OOM
     for i in range(img_cfg["HEIGHT"] // patch_size[0]):
         for j in range(img_cfg["WIDTH"] // patch_size[1]):
@@ -799,104 +898,109 @@ def render_car(
             psx, pex, psy, pey = get_pad_img_bbox(
                 sx, ex, sy, ey, img_cfg["HEIGHT"], img_cfg["WIDTH"], img_cfg["PADDING"]
             )
-            if torch.count_nonzero(_raydirs[:, sy:ey, sx:ex]) > 0:
-                output = car_model(
-                    _hf_seg,
-                    _voxel_id[:, psy:pey, psx:pex],
+            if torch.count_nonzero(g_mask[:, sy:ey, sx:ex]) > 0:
+                color, sigma = car_model(
+                    hf_seg,
+                    voxel_id[:, psy:pey, psx:pex],
                     depth2[:, psy:pey, psx:pex],
-                    _raydirs[:, psy:pey, psx:pex],
+                    raydirs[:, psy:pey, psx:pex],
                     cam_origin,
-                    ftp_stats=torch.from_numpy(
-                        np.array([car_stats["cy"], car_stats["cx"], car_stats["cz"]])
-                    ).unsqueeze(dim=0),
+                    ftp_stats=torch.tensor(
+                        [[0, 0]],
+                        dtype=torch.float32,
+                        device=hf_seg.device,
+                    ),
                     z=car_z,
                     deterministic=True,
                 )
-                _mask = (voxel_id[:, sy:ey, sx:ex, 0, 0] == curr_car_inst).unsqueeze(
-                    dim=1
-                )
-                car_img[:, :, sy:ey, sx:ex] = (
-                    get_img_without_pad(
-                        output, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
+                color = get_img_without_pad(
+                        color, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
                     )
-                    * _mask
+                sigma = get_img_without_pad(
+                    sigma[None, ...], sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
                 )
+                _mask = sigma * g_mask[None, :, sy:ey, sx:ex]
+                _mask[_mask < 0.1] = 0
+                _mask = (_mask * 2).clamp(0, 1)
+                car_img[:, :, sy:ey, sx:ex] = color * _mask
                 car_mask[:, :, sy:ey, sx:ex] = _mask
 
     return car_img, car_mask
 
 
-def render(
-    patch_size, hf_segs, raycast, models, stats, zs, vol_sizes, img_cfg, inst_cfg
-):
-    buildings = torch.unique(
-        raycast["VOXEL_ID"][
-            (raycast["VOXEL_ID"] >= inst_cfg["BLDG_INST_RANGE"][0])
-            & (raycast["VOXEL_ID"] < inst_cfg["BLDG_INST_RANGE"][1])
-        ]
+def _get_rotated_coordinates(point, pivot, theta):
+    x = (
+        (point["x"] - pivot["x"]) * math.cos(math.radians(theta))
+        + (point["y"] - pivot["y"]) * math.sin(math.radians(theta))
+        + pivot["x"]
     )
-    buildings = buildings[buildings % inst_cfg["BLDG_MULTIPLIER"] == 0]
+    y = (
+        -(point["x"] - pivot["x"]) * math.sin(math.radians(theta))
+        + (point["y"] - pivot["y"]) * math.cos(math.radians(theta))
+        + pivot["y"]
+    )
 
-    cars = []
-    if stats["CAR"] is not None:
-        cars = torch.unique(
-            raycast["VOXEL_ID"][
-                (raycast["VOXEL_ID"] >= inst_cfg["CAR_INST_RANGE"][0])
-                & (raycast["VOXEL_ID"] < inst_cfg["CAR_INST_RANGE"][1])
-            ]
-        )
+    new_pt = {"x": x, "y": y}
+    if "z" in point:
+        new_pt["z"] = point["z"]
 
-    with torch.no_grad():
-        bg_img = render_bg(
-            patch_size,
-            models["BG"],
-            hf_segs["STATIC"],
-            raycast["VOXEL_ID"],
-            raycast["DEPTH2"],
-            raycast["RAYDIRS"],
-            raycast["CAM_ORIGIN"],
-            zs["BG"],
-            vol_sizes,
-            img_cfg,
-            inst_cfg,
-        )
-        for b in buildings:
-            bldg_img, bldg_mask = render_bldg(
-                patch_size,
-                models["BLDG"],
-                b.item(),
-                hf_segs["STATIC"],
-                raycast["VOXEL_ID"],
-                raycast["DEPTH2"],
-                raycast["RAYDIRS"],
-                raycast["CAM_ORIGIN"],
-                stats["BLDG"][b.item()],
-                zs["BLDG"][b.item()],
-                vol_sizes,
-                img_cfg,
-                inst_cfg,
-            )
-            bg_img = bg_img * (1 - bldg_mask) + bldg_img * bldg_mask
+    return new_pt
 
-        for c in cars:
-            car_img, car_mask = render_car(
-                patch_size,
-                models["CAR"],
-                c.item(),
-                hf_segs["DYNAMIC"],
-                raycast["VOXEL_ID"],
-                raycast["DEPTH2"],
-                raycast["RAYDIRS"],
-                raycast["CAM_ORIGIN"],
-                stats["CAR"][c.item()],
-                zs["CAR"][c.item()],
-                vol_sizes,
-                img_cfg,
-                inst_cfg,
-            )
-            bg_img = bg_img * (1 - car_mask) + car_img * car_mask
 
-    return bg_img
+def _get_car_volume(car_inst, n_car_classes, vehicle_bev_file, vol_size, device):
+    # In CitySample, all height values are delimetered by 2560.
+    HF_DELIMETER = 2560
+
+    car_sub_class = car_inst % n_car_classes + 1
+    with open(vehicle_bev_file, "rb") as f:
+        vehicles = pickle.load(f)
+        projection = vehicles[car_sub_class - 1]
+        projection["INS_BEV"] = projection["INS_BEV"].astype(np.int16) * car_sub_class
+        projection = _get_padded_projection(projection, vol_size)
+
+    seg_volume = torch.zeros(
+        (vol_size, vol_size, vol_size),
+        dtype=torch.int16,
+        device=device,
+    )
+    seg_volume = extensions.footprint_extruder.extrude_footprint(
+        seg_volume,
+        torch.from_numpy(projection["INS_BEV"]).to(device).contiguous(),
+        torch.from_numpy(projection["TD_HF"]).to(device).contiguous(),
+        torch.from_numpy(projection["BU_HF"]).to(device).contiguous(),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    seg_volume[seg_volume != 0] = car_sub_class
+    hf_seg, _ = get_hf_seg_tensor(
+        projection,
+        cx=None,
+        cy=None,
+        n_classes=n_car_classes + 1,
+        cfg={"MAX_HEIGHT": HF_DELIMETER},
+        output_device=device,
+    )
+    return hf_seg, seg_volume
+
+
+def _get_padded_projection(projection, target_size):
+    padded_projection = {}
+    for k, v in projection.items():
+        padded_projection[k] = np.zeros((target_size, target_size), dtype=v.dtype)
+        sy = target_size // 2 - v.shape[0] // 2
+        ey = sy + v.shape[0]
+        sx = target_size // 2 - v.shape[1] // 2
+        ex = sx + v.shape[1]
+        padded_projection[k][sy:ey, sx:ex] = v
+        # In the traffic scenario, the 0 degree is the east direction.
+        # In NeRF, the 0 degree is the north direction.
+        padded_projection[k] = np.ascontiguousarray(np.rot90(padded_projection[k]))
+
+    return padded_projection
 
 
 def get_video(frames, output_file, img_cfg):
@@ -919,6 +1023,7 @@ def main(
     bldg_ckpt,
     car_ckpt,
     dataset_dirs,
+    vehicle_bev_file,
     output_file,
 ):
     logging.info("Initialize models ...")
@@ -954,6 +1059,7 @@ def main(
         bg_model.module.cfg.STYLE_DIM,
         bldg_model.output_device,
     )
+
     # Check the instance ID for buildings and cars
     assert min(list(bldg_zs.keys())) >= get_cfg_value("BLDG_INST_RANGE", dataset)[0]
     assert max(list(bldg_zs.keys())) < get_cfg_value("BLDG_INST_RANGE", dataset)[1]
@@ -1012,6 +1118,7 @@ def main(
         "HEIGHT": get_cfg_value("IMAGE_HEIGHT", dataset),
         "WIDTH": get_cfg_value("IMAGE_WIDTH", dataset),
         "PADDING": get_cfg_value("IMAGE_PADDING", dataset),
+        "VFOV": get_cfg_value("IMAGE_VFOV", dataset),
     }
 
     logging.info("Caching raycast results ...")
@@ -1061,19 +1168,6 @@ def main(
 
         scenario = copy.deepcopy(scenarios[f_idx]) if scenarios else None
         if scenario is not None:
-            hf_seg_dynamic, _ = get_hf_seg_tensor(
-                scenario["PROJECTIONS"]["REST"],
-                cx,
-                cy,
-                get_cfg_value("N_CAR_CLASSES", dataset),
-                {
-                    "INST_RANGE": get_cfg_value("CAR_INST_RANGE", dataset),
-                    "MAX_HEIGHT": get_cfg_value("CAR_MAX_HEIGHT", dataset),
-                    "VOL_SIZE": get_cfg_value("VOL_SIZE/EXTEND", dataset),
-                    "CLASS_MAPPER": _car_class_callback,
-                },
-                bg_model.output_device,
-            )
             car_stats = get_part_car_stats(
                 torch.unique(voxel_id).cpu().numpy(),
                 scenario["METADATA"],
@@ -1086,7 +1180,6 @@ def main(
             patch_size,
             {
                 "STATIC": hf_seg_static,
-                "DYNAMIC": hf_seg_dynamic if scenario else None,
             },
             {
                 "VOXEL_ID": voxel_id,
@@ -1119,6 +1212,8 @@ def main(
                 "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET", dataset),
                 "CAR_INST_RANGE": get_cfg_value("CAR_INST_RANGE", dataset),
                 "N_CAR_CLASSES": get_cfg_value("N_CAR_CLASSES", dataset) - 1,
+                "N_VOXEL_SAMPLES": get_cfg_value("N_VOXEL_SAMPLES", dataset),
+                "CAR_BEV_FILE": vehicle_bev_file,
             },
         )
         img = (utils.helpers.tensor_to_image(img, "RGB") * 255).astype(np.uint8)
@@ -1159,6 +1254,10 @@ if __name__ == "__main__":
         default=os.path.join(PROJECT_HOME, "data", "city-sample", "City02"),
     )
     parser.add_argument(
+        "--vehicle_bev_file",
+        default=os.path.join(PROJECT_HOME, "data", "city-sample", "vehicles.pkl"),
+    )
+    parser.add_argument(
         "--patch_height",
         default=get_cfg_value("IMAGE_HEIGHT") // 4,
         type=int,
@@ -1182,5 +1281,6 @@ if __name__ == "__main__":
         args.bldg_ckpt,
         args.car_ckpt,
         {"osm": args.city_osm_dir, "city_sample": args.city_sample_dir},
+        args.vehicle_bev_file,
         args.output_file,
     )

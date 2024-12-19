@@ -6,3 +6,6 @@
 # @Last Modified by: Haozhe Xie
 # @Last Modified at: 2023-04-21 19:45:31
 # @Email:  root@haozhexie.com
+
+from .train import train
+from .test import test

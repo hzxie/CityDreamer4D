@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-12 19:53:21
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-16 15:43:31
+# @Last Modified at: 2024-12-19 10:36:44
 # @Email:  root@haozhexie.com
 # @Ref: https://github.com/hzxie/CityDreamer/blob/master/models/gancraft.py
 
@@ -97,7 +97,7 @@ class GanCraftGenerator(torch.nn.Module):
         if self.encoder is not None:
             features = self.encoder(hf_seg)
 
-        net_out = self._forward_perpix(
+        net_out, sigma = self._forward_perpix(
             features,
             voxel_id,
             depth2,
@@ -108,7 +108,7 @@ class GanCraftGenerator(torch.nn.Module):
             deterministic,
         )
         fake_images = self._forward_global(net_out, z)
-        return fake_images
+        return fake_images, sigma
 
     def _forward_perpix(
         self,
@@ -210,7 +210,8 @@ class GanCraftGenerator(torch.nn.Module):
         )
         net_out = net_out.squeeze(-2)
         net_out = net_out - 1
-        return net_out
+
+        return net_out, torch.sum(weights, dim=-2).squeeze(dim=-1)
 
     def get_sky(self, raydirs):
         sky_raydirs_in = raydirs.expand(-1, -1, -1, 1, -1).contiguous()
@@ -255,9 +256,6 @@ class GanCraftGenerator(torch.nn.Module):
             )
             world_coord[..., 0] -= ftp_stats[..., 0] + self.center_offset
             world_coord[..., 1] -= ftp_stats[..., 1] + self.center_offset
-            if ftp_stats.size(-1) > 2:
-                world_coord[..., 2] -= ftp_stats[..., 2]
-
             zero_rd_mask = raydirs.repeat(1, 1, 1, n_samples, 1)
             world_coord[zero_rd_mask == 0] = 0
 
