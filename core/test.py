@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:46:36
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-19 10:37:11
+# @Last Modified at: 2024-12-27 19:16:40
 # @Email:  root@haozhexie.com
 
 import logging
@@ -45,7 +45,7 @@ def test(cfg, test_data_loader=None, gancraft=None):
             gancraft.device = gancraft.output_device
 
         logging.info("Recovering from %s ..." % (cfg.CONST.CKPT))
-        checkpoint = torch.load(cfg.CONST.CKPT)
+        checkpoint = torch.load(cfg.CONST.CKPT, weights_only=False)
         if cfg.TRAIN.GANCRAFT.EMA_ENABLED:
             gancraft.load_state_dict(checkpoint["gancraft_g_ema"])
         else:

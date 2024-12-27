@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-19 13:39:17
+# @Last Modified at: 2024-12-27 19:16:36
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -137,7 +137,7 @@ def _get_model(dataset, ckpt_file_path):
     if not os.path.exists(ckpt_file_path):
         return None
 
-    ckpt = torch.load(ckpt_file_path)
+    ckpt = torch.load(ckpt_file_path, weights_only=False)
     dt_cfg, model_cfg, inst = _get_compatible_cfg(ckpt["cfg"], dataset)
     city_dataset = utils.datasets.CityDataset(dt_cfg, None, inst)
     model = models.gancraft.GanCraftGenerator(
@@ -914,10 +914,19 @@ def render_car(
                     deterministic=True,
                 )
                 color = get_img_without_pad(
-                        color, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
-                    )
+                    color, sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
+                )
                 sigma = get_img_without_pad(
-                    sigma[None, ...], sx, ex, sy, ey, psx, pex, psy, pey, img_cfg["PADDING"]
+                    sigma[None, ...],
+                    sx,
+                    ex,
+                    sy,
+                    ey,
+                    psx,
+                    pex,
+                    psy,
+                    pey,
+                    img_cfg["PADDING"],
                 )
                 _mask = sigma * g_mask[None, :, sy:ey, sx:ex]
                 _mask[_mask < 0.1] = 0

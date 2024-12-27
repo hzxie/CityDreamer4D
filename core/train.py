@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-21 19:45:23
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-19 10:37:49
+# @Last Modified at: 2024-12-27 19:16:46
 # @Email:  root@haozhexie.com
 
 import copy
@@ -131,7 +131,9 @@ def train(cfg):
     init_epoch = 0
     if "CKPT" in cfg.CONST:
         logging.info("Recovering from %s ..." % (cfg.CONST.CKPT))
-        checkpoint = torch.load(cfg.CONST.CKPT, map_location=gancraft_g.device)
+        checkpoint = torch.load(
+            cfg.CONST.CKPT, map_location=gancraft_g.device, weights_only=False
+        )
         gancraft_g.load_state_dict(checkpoint["gancraft_g"])
         if cfg.TRAIN.GANCRAFT.DISCRIMINATOR.ENABLED:
             gancraft_d.load_state_dict(checkpoint["gancraft_d"])
