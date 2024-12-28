@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-16 14:40:35
+# @Last Modified at: 2024-12-28 16:47:54
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -37,7 +37,22 @@ import extensions.keypoint_detector
 def get_cfg_values(key):
     from config import cfg
 
-    CFG = {"LANE_WIDTH": 14, "CENTERLINE_WIDTH": 10, "MAP_SIZE": (19600, 19600)}
+    # GOOGLE_EARTH
+    # CFG = {
+    #     "LANE_WIDTH": 7,
+    #     "CENTERLINE_WIDTH": 5,
+    #     "MAP_SIZE": (2048, 2048),
+    #     "END_NODE_OFFSET": 50,
+    #     "OFFSET_STEP": 100,
+    # }
+    # CITY_SAMPLE
+    CFG = {
+        "LANE_WIDTH": 14,
+        "CENTERLINE_WIDTH": 10,
+        "MAP_SIZE": (19600, 19600),
+        "END_NODE_OFFSET": 100,
+        "OFFSET_STEP": 200,
+    }
 
     return CFG[key] if key in CFG else cfg.DATASETS.CITY_SAMPLE[key]
 
@@ -54,7 +69,7 @@ def get_projections(projection_dir, layers, maps):
     return projections
 
 
-def _get_vehicle_bevs(vehicle_bev_file):
+def _get_vehicle_bevs(vehicle_bev_file, scale=1):
     # projections = get_projections(
     #     "data/city-sample/City00/Projections", ["CAR"], ["TD_HF", "BU_HF", "INS_BEV"]
     # )
@@ -73,7 +88,17 @@ def _get_vehicle_bevs(vehicle_bev_file):
     #         vehicles[i][layer] = np.rot90(
     #             projections["CAR"][layer][b[1] : b[3], b[0] : b[2]], 3
     #         ).astype(np.int16)
+    #         if scale != 1:
+    #             vehicles[i][layer] = cv2.resize(vehicles[i][layer], (0, 0), fx=0.5, fy=0.5)
+
+    #     # Binarize the INS_BEV map
     #     vehicles[i]["INS_BEV"] = vehicles[i]["INS_BEV"] != 0
+    #     # Adjust the height values to half of the original values
+    #     if scale != 1:
+    #         delta = vehicles[i]["TD_HF"] - vehicles[i]["BU_HF"]
+    #         vehicles[i]["TD_HF"] = vehicles[i]["BU_HF"] + (delta / 2 + 0.5).astype(np.int16)
+    #         vehicles[i]["TD_HF"] *= vehicles[i]["INS_BEV"]
+
     with open(vehicle_bev_file, "rb") as f:
         # pickle.dump(vehicles, f)
         vehicles = pickle.load(f)
@@ -162,7 +187,8 @@ def _get_starting_node(kpts_map, kp_xs, kp_ys, is_closed):
             # Ensure that the point connects to a number of edges that is not equal to 2.
             return x, y
 
-    assert False, "No starting node found!"
+    # assert False, "No starting node found!"
+    return None, None
 
 
 def _get_next_ngr_nodes(kpts_map, curr_node):
@@ -194,7 +220,11 @@ def _get_nodes(kpts_map, kp_xs, kp_ys, closed):
     nodes = {}
     unvisited_nodes = queue.Queue()
     # DFS
-    unvisited_nodes.put(_get_starting_node(kpts_map, kp_xs, kp_ys, closed))
+    x, y = _get_starting_node(kpts_map, kp_xs, kp_ys, closed)
+    if x is None and y is None:
+        return nodes
+
+    unvisited_nodes.put((x, y))
     while not unvisited_nodes.empty():
         curr_node = unvisited_nodes.get()
         if curr_node in nodes:
@@ -214,6 +244,9 @@ def _get_nodes(kpts_map, kp_xs, kp_ys, closed):
 
 def _get_ways(nodes, closed):
     ways = []
+    if not nodes:
+        return ways
+
     edges = set()
     unvisited_edges = queue.Queue()
     # Determine the starting edge
@@ -784,11 +817,12 @@ def get_traffic_graphs(traffic_maps, manual_fixer):
         traffic_graphs[tk]["CNTR"] = _simplify_ways(traffic_graphs[tk]["CNTR"])
 
     # Attach freeways to roads
-    traffic_graphs["FREEWAY"]["CNTR"], traffic_graphs["REST"]["CNTR"] = (
-        _attach_freeways_and_roads(
-            traffic_graphs["FREEWAY"]["CNTR"], traffic_graphs["REST"]["CNTR"]
+    if "FREEWAY" in traffic_graphs:
+        traffic_graphs["FREEWAY"]["CNTR"], traffic_graphs["REST"]["CNTR"] = (
+            _attach_freeways_and_roads(
+                traffic_graphs["FREEWAY"]["CNTR"], traffic_graphs["REST"]["CNTR"]
+            )
         )
-    )
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
@@ -856,7 +890,7 @@ def _is_nodes_reversed(nodes):
 
 def _get_traffic_lanes(road_centers, lane_width):
     lanes = []
-    for rc in road_centers:
+    for idx, rc in enumerate(road_centers):
         if _is_nodes_reversed(rc["nodes"]):
             rc["nodes"] = rc["nodes"][::-1]
 
@@ -912,8 +946,8 @@ def _get_traffic_lanes(road_centers, lane_width):
                         )
                     )
                 )
-            lanes.append({"way": rc["id"], "nodes": _fwd_lane, "dir": "F"})
-            lanes.append({"way": rc["id"], "nodes": _bwd_lane[::-1], "dir": "B"})
+            lanes.append({"way": idx, "nodes": _fwd_lane, "dir": "F"})
+            lanes.append({"way": idx, "nodes": _bwd_lane[::-1], "dir": "B"})
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
@@ -973,21 +1007,25 @@ def _get_vehicle_tilt(cx, cy, heading, height_map):
     )
     head_hgt = max(height_map[head_pt[1], head_pt[0]], BASE_HEIGHT)
     tail_hgt = max(height_map[tail_pt[1], tail_pt[0]], BASE_HEIGHT)
-    tilt = math.degrees(math.asin((head_hgt - tail_hgt) / HALF_VEHICLE_WIDTH / 2))
+    try:
+        tilt = math.degrees(math.asin((head_hgt - tail_hgt) / HALF_VEHICLE_WIDTH / 2))
+    except ValueError:
+        tilt = 0
 
     return tilt, cz
 
 
-def _get_vehicles_along_lane(traffic_lane, height_map, min_id):
-    END_NODE_OFFSET = 100
-    OFFSET_STEP = 200
-
+def _get_vehicles_along_lane(
+    traffic_lane, height_map, min_id, end_node_offset, offset_step
+):
     vehicles = []
     lane_length = _get_way_length(traffic_lane["nodes"])
 
-    offset = END_NODE_OFFSET
-    while offset < lane_length - END_NODE_OFFSET:
-        offset += OFFSET_STEP + np.random.randint(-50, 50)
+    offset = end_node_offset
+    while offset < lane_length - end_node_offset:
+        offset += offset_step + np.random.randint(
+            -end_node_offset // 2, end_node_offset // 2
+        )
         cx, cy = _get_next_node_along_path(traffic_lane["nodes"], offset)
         if cx is None and cy is None:
             break
@@ -1016,7 +1054,9 @@ def _get_vehicles_along_lane(traffic_lane, height_map, min_id):
     return [v for v in vehicles if np.random.rand() > 0.6]
 
 
-def _get_vehicles_along_lanes(traffic_lanes, height_map, n_vehicles=0):
+def _get_vehicles_along_lanes(
+    traffic_lanes, height_map, n_vehicles, end_node_offset, offset_step
+):
     tracks = []
     for tl in traffic_lanes:
         if "dir" not in tl:
@@ -1024,18 +1064,26 @@ def _get_vehicles_along_lanes(traffic_lanes, height_map, n_vehicles=0):
             continue
 
         tracks.extend(
-            _get_vehicles_along_lane(tl, height_map, n_vehicles + len(tracks) + 1)
+            _get_vehicles_along_lane(
+                tl,
+                height_map,
+                n_vehicles + len(tracks) + 1,
+                end_node_offset,
+                offset_step,
+            )
         )
 
     return tracks
 
 
-def generate_init_scenario(traffic_lanes, scene_bevs):
+def generate_init_scenario(traffic_lanes, scene_bevs, end_node_offset, offset_step):
     scenario = {}
     n_vehicles = 0
     for tk, tv in traffic_lanes.items():
         scenario[tk] = {
-            "TRACK": _get_vehicles_along_lanes(tv, scene_bevs[tk]["TD_HF"], n_vehicles)
+            "TRACK": _get_vehicles_along_lanes(
+                tv, scene_bevs[tk]["TD_HF"], n_vehicles, end_node_offset, offset_step
+            )
         }
         n_vehicles += len(scenario[tk]["TRACK"])
         # TODO
@@ -1144,15 +1192,15 @@ def main(
     projection_dir, scenario_dir, vehicle_bev_file, manual_fix_file, layers, n_steps
 ):
     logging.info("Loading Vehicle BEVs ...")
-    vehicle_bevs = _get_vehicle_bevs(vehicle_bev_file)
+    vehicle_bevs = _get_vehicle_bevs(vehicle_bev_file, 0.5)
     logging.info("Parsing Road Networks ...")
     road_networks = get_road_networks(projection_dir, layers)
     logging.info("Parsing Traffic Maps ...")
     traffic_maps = get_traffic_maps(road_networks)
     # # Faster Debug
     # with open("output/traffic_maps.pkl", "rb") as f:
-    #     # pickle.dump(traffic_maps, f)
-    #     traffic_maps = pickle.load(f)
+    #     pickle.dump(traffic_maps, f)
+    #     # traffic_maps = pickle.load(f)
 
     manual_fixer = None
     if os.path.exists(manual_fix_file):
@@ -1162,8 +1210,8 @@ def main(
     traffic_graphs = get_traffic_graphs(traffic_maps, manual_fixer)
     # # Faster Debug
     # with open("output/traffic_graphs.pkl", "rb") as f:
-    #     # pickle.dump(traffic_graphs, f)
-    #     traffic_graphs = pickle.load(f)
+    #     pickle.dump(traffic_graphs, f)
+    #     # traffic_graphs = pickle.load(f)
 
     traffic_graphs = get_traffic_lanes(
         road_networks,
@@ -1181,7 +1229,10 @@ def main(
     scene_bevs = get_projections(projection_dir, layers, ["TD_HF", "INS_BEV"])
     scenarios.append(
         generate_init_scenario(
-            {k: v["LANE"] for k, v in traffic_graphs.items()}, scene_bevs
+            {k: v["LANE"] for k, v in traffic_graphs.items()},
+            scene_bevs,
+            get_cfg_values("END_NODE_OFFSET"),
+            get_cfg_values("OFFSET_STEP"),
         )
     )
     # TODO: Generate scenarios in the next steps
@@ -1210,32 +1261,36 @@ if __name__ == "__main__":
     )
     parser = argparse.ArgumentParser(description="The Traffic Scenario Generator")
     parser.add_argument(
+        "--dataset_dir",
+        default=os.path.join(PROJECT_HOME, "data", "city-sample"),
+    )
+    parser.add_argument("--city", default="City01")
+    args, _ = parser.parse_known_args()
+
+    parser.add_argument(
         "--projection_dir",
-        default=os.path.join(PROJECT_HOME, "data", "city-sample", "%s", "Projections"),
+        default=os.path.join(args.dataset_dir, args.city, "Projection"),
     )
     parser.add_argument(
         "--scenario_dir",
-        default=os.path.join(PROJECT_HOME, "data", "city-sample", "%s", "Scenarios"),
+        default=os.path.join(args.dataset_dir, args.city, "Scenarios"),
     )
     parser.add_argument(
         "--vehicle_bev_file",
-        default=os.path.join(PROJECT_HOME, "data", "city-sample", "vehicles.pkl"),
+        default=os.path.join(args.dataset_dir, "vehicles.pkl"),
     )
     parser.add_argument(
         "--manual_fix_file",
-        default=os.path.join(
-            PROJECT_HOME, "data", "city-sample", "%s", "TrafficFix.json"
-        ),
+        default=os.path.join(args.dataset_dir, args.city, "TrafficFix.json"),
     )
-    parser.add_argument("--city", default="City01")
     parser.add_argument("--layers", default="REST, FREEWAY")
     parser.add_argument("--steps", type=int, default=20)
     args = parser.parse_args()
     main(
-        args.projection_dir % (args.city),
-        args.scenario_dir % (args.city),
+        args.projection_dir,
+        args.scenario_dir,
         args.vehicle_bev_file,
-        args.manual_fix_file % (args.city),
+        args.manual_fix_file,
         [layer.strip() for layer in args.layers.split(",")],
         args.steps,
     )
