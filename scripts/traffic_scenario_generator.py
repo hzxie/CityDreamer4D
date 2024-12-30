@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-28 16:47:54
+# @Last Modified at: 2024-12-30 22:01:25
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -542,15 +542,25 @@ def _get_line_equation(pt0, pt1):
 def _get_intersection_point(line0, line1):
     k0, b0 = line0
     k1, b1 = line1
-    if k0 == k1:
+    # The line is almostly vertical
+    k0 = None if k0 is None or abs(k0) > 1e2 else k0
+    k1 = None if k1 is None or abs(k1) > 1e2 else k1
+
+    if k0 is None and k1 is None:
         return None
     elif k0 is None:
-        return (b0, k1 * b0 + b1)
+        x = b0
+        y = k1 * b0 + b1
     elif k1 is None:
-        return (b1, k0 * b1 + b0)
+        x = b1
+        y = k0 * b1 + b0
+    elif abs(k0 - k1) < 1e-2:
+        # 1e-2 -> math.tan(math.radians(1))
+        return None
+    else:
+        x = (b1 - b0) / (k0 - k1)
+        y = k0 * x + b0
 
-    x = (b1 - b0) / (k0 - k1)
-    y = k0 * x + b0
     return (round(x), round(y))
 
 
@@ -865,12 +875,64 @@ def _get_next_node_along_path(way_nodes, dist):
             ratio = remaining_distance / segment_distance
             x_new = x1 + ratio * (x2 - x1)
             y_new = y1 + ratio * (y2 - y1)
-            return round(x_new), round(y_new)
+            return round(x_new), round(y_new), i
 
         # Accumulate the distance and move to the next segment
         accumulated_distance += segment_distance
 
-    return None, None
+    return None, None, None
+
+
+def _get_intersections(road_centers):
+    interxns = {}
+    for rc in road_centers:
+        if rc["nodes"][0] not in interxns:
+            interxns[rc["nodes"][0]] = []
+        if rc["nodes"][-1] not in interxns:
+            interxns[rc["nodes"][-1]] = []
+
+        interxns[rc["nodes"][0]].append(rc)
+        interxns[rc["nodes"][-1]].append(rc)
+
+    return interxns
+
+
+def _get_shortened_road_centers(road_centers):
+    interxns = _get_intersections(road_centers)
+    # Deep copy the nodes
+    for rc in road_centers:
+        rc["shtn_nodes"] = [n for n in rc["nodes"]]
+
+    for interxn, connected_ways in interxns.items():
+        max_width = 0
+        # Find the maximum width of the connected ways
+        for cw in connected_ways:
+            max_width = max(max_width, cw["width"])
+
+        # Shortening the road centerline according to the maximum width
+        for cw in connected_ways:
+            assert interxn == cw["nodes"][0] or interxn == cw["nodes"][-1]
+            # Reverse the nodes if the intersection is the last node
+            if interxn == cw["nodes"][-1]:
+                cw["shtn_nodes"] = cw["shtn_nodes"][::-1]
+
+            x, y, idx = _get_next_node_along_path(cw["shtn_nodes"], max_width)
+            if idx is None:
+                logging.warning(
+                    "Cannot determine the shortened road centerline for %s." % cw
+                )
+                continue
+
+            cw["shtn_nodes"] = [(x, y)] + cw["shtn_nodes"][idx:]
+            # Reverse back the nodes if the intersection is the last node
+            if interxn == cw["nodes"][-1]:
+                cw["shtn_nodes"] = cw["shtn_nodes"][::-1]
+
+    # Debug: Visualization
+    # img = np.zeros((19600, 19600), np.uint8)
+    # for way in road_centers:
+    #     img = cv2.polylines(img, [np.array(way["shtn_nodes"])], False, 255, 1)
+    return road_centers
 
 
 def _is_nodes_reversed(nodes):
@@ -891,11 +953,10 @@ def _is_nodes_reversed(nodes):
 def _get_traffic_lanes(road_centers, lane_width):
     lanes = []
     for idx, rc in enumerate(road_centers):
-        if _is_nodes_reversed(rc["nodes"]):
-            rc["nodes"] = rc["nodes"][::-1]
+        if _is_nodes_reversed(rc["shtn_nodes"]):
+            rc["shtn_nodes"] = rc["shtn_nodes"][::-1]
 
-        # nodes = rc["nodes"][1:-1]
-        nodes = rc["nodes"]
+        nodes = rc["shtn_nodes"]
         n_nodes = len(nodes)
         vectors = []
         for i in range(n_nodes):
@@ -946,16 +1007,121 @@ def _get_traffic_lanes(road_centers, lane_width):
                         )
                     )
                 )
-            lanes.append({"way": idx, "nodes": _fwd_lane, "dir": "F"})
-            lanes.append({"way": idx, "nodes": _bwd_lane[::-1], "dir": "B"})
+            lanes.append({"id": len(lanes), "way": idx, "nodes": _fwd_lane, "dir": "F"})
+            lanes.append(
+                {"id": len(lanes), "way": idx, "nodes": _bwd_lane[::-1], "dir": "B"}
+            )
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
     # for lane in lanes:
     #     if lane["dir"] == "F":
     #         img = cv2.polylines(img, [np.array(lane["nodes"])], False, 255, 1)
-    #     else:
+    #     elif lane["dir"] == "B":
     #         img = cv2.polylines(img, [np.array(lane["nodes"])], False, 128, 1)
+    return lanes
+
+
+def _is_input_lane(lane, interxn):
+    # If the first node near the intersection, it is an input lane.
+    # Othwise, it is an output lane.
+    dist0 = np.linalg.norm(np.array(lane["nodes"][0]) - np.array(interxn))
+    dist1 = np.linalg.norm(np.array(lane["nodes"][-1]) - np.array(interxn))
+    return dist0 < dist1
+
+
+def _get_lane_equation(lane, direction):
+    assert direction in [0, -1]
+    if direction == 0:
+        return _get_line_equation(lane["nodes"][0], lane["nodes"][1])
+    else:
+        return _get_line_equation(lane["nodes"][-1], lane["nodes"][-2])
+
+
+def _bezier_curve(pt0, pt1, pt2, t):
+    # Bézier formula
+    return (
+        (1 - t) ** 2 * np.array(pt0)
+        + 2 * (1 - t) * t * np.array(pt1)
+        + t**2 * np.array(pt2)
+    )
+
+
+def _get_bezier_curve(pt0, pt1, pt2):
+    pts = []
+    for t in np.linspace(0, 1, 10):
+        point = _bezier_curve(pt0, pt1, pt2, t)
+        int_point = tuple(np.round(point).astype(int))
+        pts.append(int_point)
+
+    return pts
+
+
+def _get_connected_lanes(input_lane, output_lanes, mode):
+    assert mode in ["F", "B"]
+    # Mode=F -> The first node of the input lane connects to the last node of the output lane
+    # Mode=B -> The last node of the input lane connects to the first node of the output lane
+    input_line = _get_lane_equation(input_lane, 0 if mode == "B" else -1)
+
+    connected_lanes = []
+    for output_lane in output_lanes:
+        output_line = _get_lane_equation(output_lane, 0 if mode == "F" else -1)
+        interxn = _get_intersection_point(input_line, output_line)
+        if mode == "B":
+            first_node = output_lane["nodes"][-1]
+            last_node = input_lane["nodes"][0]
+        else:
+            first_node = input_lane["nodes"][-1]
+            last_node = output_lane["nodes"][0]
+
+        # Check if the intersection point is between the two nodes
+        # TODO: Too Strict
+        x_range = (min(first_node[0], last_node[0]), max(first_node[0], last_node[0]))
+        y_range = (min(first_node[1], last_node[1]), max(first_node[1], last_node[1]))
+        if interxn is not None and not (
+            interxn[0] >= x_range[0]
+            and interxn[0] <= x_range[1]
+            and interxn[1] >= y_range[0]
+            and interxn[1] <= y_range[1]
+        ):
+            interxn = None
+
+        if interxn is None:
+            connected_lanes.append({"nodes": [first_node, last_node], "dir": "C"})
+        else:
+            connected_lanes.append(
+                {
+                    "nodes": _get_bezier_curve(first_node, interxn, last_node),
+                    "dir": "C",
+                }
+            )
+
+    return connected_lanes
+
+
+def _connect_intersection_lanes(road_centers, lanes):
+    interxns = _get_intersections(road_centers)
+
+    connecting_lanes = []
+    for interxn, connected_ways in interxns.items():
+        connected_lanes = [
+            l for l in lanes if l["way"] in [cw["id"] for cw in connected_ways]
+        ]
+        input_lanes = [l for l in connected_lanes if _is_input_lane(l, interxn)]
+        output_lanes = [l for l in connected_lanes if not _is_input_lane(l, interxn)]
+
+        for l in input_lanes:
+            connecting_lanes.extend(
+                _get_connected_lanes(
+                    l, [ol for ol in output_lanes if ol["way"] != l["way"]], "B"
+                )
+            )
+
+    lanes.extend(connecting_lanes)
+    # Debug: Visualization
+    # img = np.zeros((19600, 19600), np.uint8)
+    # for lane in connecting_lanes:
+    #     img = cv2.polylines(img, [np.array(lane["nodes"])], False, 128, 1)
     return lanes
 
 
@@ -964,9 +1130,10 @@ def get_traffic_lanes(road_networks, traffic_graphs, lane_width, centerline_widt
         tv["CNTR"] = _get_way_widths(
             road_networks[tk], tv["CNTR"], lane_width, centerline_width
         )
+        tv["CNTR"] = _get_shortened_road_centers(tv["CNTR"])
         tv["LANE"] = _get_traffic_lanes(tv["CNTR"], lane_width)
+        tv["LANE"] = _connect_intersection_lanes(tv["CNTR"], tv["LANE"])
         # TODO
-        # tv["LANE"] = _connect_intersection_lanes(tv["LANE"])
         # tv["LINE"] = None
 
     return traffic_graphs
@@ -1026,7 +1193,7 @@ def _get_vehicles_along_lane(
         offset += offset_step + np.random.randint(
             -end_node_offset // 2, end_node_offset // 2
         )
-        cx, cy = _get_next_node_along_path(traffic_lane["nodes"], offset)
+        cx, cy, _ = _get_next_node_along_path(traffic_lane["nodes"], offset)
         if cx is None and cy is None:
             break
 
@@ -1072,7 +1239,6 @@ def _get_vehicles_along_lanes(
                 offset_step,
             )
         )
-
     return tracks
 
 
@@ -1199,8 +1365,8 @@ def main(
     traffic_maps = get_traffic_maps(road_networks)
     # # Faster Debug
     # with open("output/traffic_maps.pkl", "rb") as f:
-    #     pickle.dump(traffic_maps, f)
-    #     # traffic_maps = pickle.load(f)
+    #     # pickle.dump(traffic_maps, f)
+    #     traffic_maps = pickle.load(f)
 
     manual_fixer = None
     if os.path.exists(manual_fix_file):
@@ -1210,8 +1376,8 @@ def main(
     traffic_graphs = get_traffic_graphs(traffic_maps, manual_fixer)
     # # Faster Debug
     # with open("output/traffic_graphs.pkl", "rb") as f:
-    #     pickle.dump(traffic_graphs, f)
-    #     # traffic_graphs = pickle.load(f)
+    #     # pickle.dump(traffic_graphs, f)
+    #     traffic_graphs = pickle.load(f)
 
     traffic_graphs = get_traffic_lanes(
         road_networks,
@@ -1220,9 +1386,9 @@ def main(
         get_cfg_values("CENTERLINE_WIDTH"),
     )
     # # Faster Debug
-    # with open("output/traffic_lanes.pkl", "rb") as f:
-    #     # pickle.dump(traffic_graphs, f)
-    #     traffic_graphs = pickle.load(f)
+    # with open("output/traffic_lanes.pkl", "wb") as f:
+    #     pickle.dump(traffic_graphs, f)
+    #     # traffic_graphs = pickle.load(f)
 
     logging.info("Generating Traffic Scenarios ...")
     scenarios = []
@@ -1269,7 +1435,7 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--projection_dir",
-        default=os.path.join(args.dataset_dir, args.city, "Projection"),
+        default=os.path.join(args.dataset_dir, args.city, "Projections"),
     )
     parser.add_argument(
         "--scenario_dir",
