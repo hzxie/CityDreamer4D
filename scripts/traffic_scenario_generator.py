@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-30 22:01:25
+# @Last Modified at: 2025-01-01 18:19:25
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -543,8 +543,8 @@ def _get_intersection_point(line0, line1):
     k0, b0 = line0
     k1, b1 = line1
     # The line is almostly vertical
-    k0 = None if k0 is None or abs(k0) > 1e2 else k0
-    k1 = None if k1 is None or abs(k1) > 1e2 else k1
+    k0 = None if k0 is None or abs(k0) > 1e6 else k0
+    k1 = None if k1 is None or abs(k1) > 1e6 else k1
 
     if k0 is None and k1 is None:
         return None
@@ -554,8 +554,7 @@ def _get_intersection_point(line0, line1):
     elif k1 is None:
         x = b1
         y = k0 * b1 + b0
-    elif abs(k0 - k1) < 1e-2:
-        # 1e-2 -> math.tan(math.radians(1))
+    elif abs(k0 - k1) < 1e-6:
         return None
     else:
         x = (b1 - b0) / (k0 - k1)
@@ -770,15 +769,15 @@ def _attach_freeways_and_roads(freeways, roads):
     for fe in freeway_entries:
         freeway_id = free_nodes[fe]["ways"][0]
         entry_next = _get_next_way_node(free_ways[freeway_id]["nodes"], fe, 1)
-        attached_way, freeway_interxn, anchor_way_node = _get_attached_way(
+        road_id, freeway_interxn, anchor_way_node = _get_attached_way(
             (fe, entry_next), road_interxns, road_ways
         )
-        if attached_way is None:
+        if road_id is None:
             logging.warning("No attached way found for freeway entry: %s" % (fe,))
             continue
         # Add intersection to the attached way nodes
-        road_ways[attached_way]["nodes"] = _insert_node_after(
-            anchor_way_node, freeway_interxn, road_ways[attached_way]["nodes"]
+        road_ways[road_id]["nodes"] = _insert_node_after(
+            anchor_way_node, freeway_interxn, road_ways[road_id]["nodes"]
         )
         # Change the entry node to the intersection
         assert (
@@ -791,6 +790,8 @@ def _attach_freeways_and_roads(freeways, roads):
             )
 
         free_ways[freeway_id]["nodes"][0] = freeway_interxn
+        free_ways[freeway_id]["attach"] = road_id
+        road_ways[road_id]["attach"] = freeway_id
 
     return [v for v in free_ways.values() if len(v["nodes"]) >= 2], [
         v for v in road_ways.values() if len(v["nodes"]) >= 2
@@ -917,7 +918,7 @@ def _get_shortened_road_centers(road_centers):
                 cw["shtn_nodes"] = cw["shtn_nodes"][::-1]
 
             x, y, idx = _get_next_node_along_path(cw["shtn_nodes"], max_width)
-            if idx is None:
+            if x is None and y is None:
                 logging.warning(
                     "Cannot determine the shortened road centerline for %s." % cw
                 )
@@ -1007,10 +1008,8 @@ def _get_traffic_lanes(road_centers, lane_width):
                         )
                     )
                 )
-            lanes.append({"id": len(lanes), "way": idx, "nodes": _fwd_lane, "dir": "F"})
-            lanes.append(
-                {"id": len(lanes), "way": idx, "nodes": _bwd_lane[::-1], "dir": "B"}
-            )
+            lanes.append({"way": idx, "nodes": _fwd_lane, "dir": "F", "next": []})
+            lanes.append({"way": idx, "nodes": _bwd_lane[::-1], "dir": "B", "next": []})
 
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
@@ -1070,9 +1069,11 @@ def _get_connected_lanes(input_lane, output_lanes, mode):
         if mode == "B":
             first_node = output_lane["nodes"][-1]
             last_node = input_lane["nodes"][0]
+            path = {"from": output_lane, "to": input_lane}
         else:
             first_node = input_lane["nodes"][-1]
             last_node = output_lane["nodes"][0]
+            path = {"from": input_lane, "to": output_lane}
 
         # Check if the intersection point is between the two nodes
         # TODO: Too Strict
@@ -1087,12 +1088,21 @@ def _get_connected_lanes(input_lane, output_lanes, mode):
             interxn = None
 
         if interxn is None:
-            connected_lanes.append({"nodes": [first_node, last_node], "dir": "C"})
+            connected_lanes.append(
+                {
+                    "nodes": [first_node, last_node],
+                    "dir": "C",
+                    "path": path,
+                    "next": [],
+                }
+            )
         else:
             connected_lanes.append(
                 {
                     "nodes": _get_bezier_curve(first_node, interxn, last_node),
                     "dir": "C",
+                    "path": path,
+                    "next": [],
                 }
             )
 
@@ -1110,33 +1120,58 @@ def _connect_intersection_lanes(road_centers, lanes):
         input_lanes = [l for l in connected_lanes if _is_input_lane(l, interxn)]
         output_lanes = [l for l in connected_lanes if not _is_input_lane(l, interxn)]
 
-        for l in input_lanes:
+        for l in output_lanes:
             connecting_lanes.extend(
                 _get_connected_lanes(
-                    l, [ol for ol in output_lanes if ol["way"] != l["way"]], "B"
+                    l, [il for il in input_lanes if il["way"] != l["way"]], "F"
                 )
             )
-
-    lanes.extend(connecting_lanes)
     # Debug: Visualization
     # img = np.zeros((19600, 19600), np.uint8)
     # for lane in connecting_lanes:
     #     img = cv2.polylines(img, [np.array(lane["nodes"])], False, 128, 1)
-    return lanes
+    return connecting_lanes
+
+
+def _connect_freeway_lanes(traffic_lanes):
+    return traffic_lanes
 
 
 def get_traffic_lanes(road_networks, traffic_graphs, lane_width, centerline_width):
+    traffic_lanes = {}
     for tk, tv in traffic_graphs.items():
         tv["CNTR"] = _get_way_widths(
             road_networks[tk], tv["CNTR"], lane_width, centerline_width
         )
         tv["CNTR"] = _get_shortened_road_centers(tv["CNTR"])
-        tv["LANE"] = _get_traffic_lanes(tv["CNTR"], lane_width)
-        tv["LANE"] = _connect_intersection_lanes(tv["CNTR"], tv["LANE"])
-        # TODO
-        # tv["LINE"] = None
 
-    return traffic_graphs
+        # Make sure that each lane has a unique id
+        tfc_lanes = _get_traffic_lanes(tv["CNTR"], lane_width)
+        for lane in tfc_lanes:
+            lane["id"] = len(traffic_lanes) + 1
+            lane["layer"] = tk
+            traffic_lanes[lane["id"]] = lane
+
+        int_lanes = _connect_intersection_lanes(tv["CNTR"], tfc_lanes)
+        for lane in int_lanes:
+            lane["id"] = len(traffic_lanes) + 1
+            lane["layer"] = tk
+            traffic_lanes[lane["id"]] = lane
+
+    # TODO: Attach freeway lanes to the road lanes
+    # if "FREEWAY" in traffic_graphs:
+    #     traffic_lanes = _connect_freeway_lanes(traffic_lanes)
+
+    # Add "next" fields to each lane
+    for lane in traffic_lanes.values():
+        if lane["dir"] != "C":
+            continue
+
+        lane["path"]["from"]["next"].append(lane["id"])
+        lane["next"].append(lane["path"]["to"]["id"])
+        del lane["path"]
+
+    return traffic_lanes
 
 
 def _get_vehicle_heading(cx, cy, way_nodes):
@@ -1182,9 +1217,7 @@ def _get_vehicle_tilt(cx, cy, heading, height_map):
     return tilt, cz
 
 
-def _get_vehicles_along_lane(
-    traffic_lane, height_map, min_id, end_node_offset, offset_step
-):
+def _get_vehicles_along_lane(traffic_lane, height_map, end_node_offset, offset_step):
     vehicles = []
     lane_length = _get_way_length(traffic_lane["nodes"])
 
@@ -1206,7 +1239,7 @@ def _get_vehicles_along_lane(
         #               3: TYPE_CYCLIST, 4: TYPE_OTHER
         vehicles.append(
             {
-                "id": np.iinfo(np.int16).max - min_id,
+                "lane": traffic_lane["id"],
                 "object_type": 1,
                 "cx": cx,
                 "cy": cy,
@@ -1215,46 +1248,119 @@ def _get_vehicles_along_lane(
                 "tilt": tilt,
             }
         )
-        min_id += 1
 
     # Random dropout
     return [v for v in vehicles if np.random.rand() > 0.6]
 
 
-def _get_vehicles_along_lanes(
-    traffic_lanes, height_map, n_vehicles, end_node_offset, offset_step
-):
-    tracks = []
-    for tl in traffic_lanes:
-        if "dir" not in tl:
-            # DO NOT put vehicles on the intersections
+def generate_init_scenario(traffic_lanes, scene_bevs, end_node_offset, offset_step):
+    scenario = {}
+    for lane in traffic_lanes.values():
+        # DO NOT put vehicles on the intersections
+        if "dir" not in lane or lane["dir"] == "C":
             continue
 
-        tracks.extend(
+        layer = lane["layer"]
+        if layer not in scenario:
+            scenario[layer] = {"TRACK": [], "TLIGHT": None}
+
+        scenario[layer]["TRACK"].extend(
             _get_vehicles_along_lane(
-                tl,
-                height_map,
-                n_vehicles + len(tracks) + 1,
+                lane,
+                scene_bevs[layer]["TD_HF"],
                 end_node_offset,
                 offset_step,
             )
         )
-    return tracks
-
-
-def generate_init_scenario(traffic_lanes, scene_bevs, end_node_offset, offset_step):
-    scenario = {}
-    n_vehicles = 0
-    for tk, tv in traffic_lanes.items():
-        scenario[tk] = {
-            "TRACK": _get_vehicles_along_lanes(
-                tv, scene_bevs[tk]["TD_HF"], n_vehicles, end_node_offset, offset_step
-            )
-        }
-        n_vehicles += len(scenario[tk]["TRACK"])
         # TODO
         # if tk != "FREEWAY":
         #     scenario[tk]["TLIGHT"] = None
+
+    # Assign unique ids to the vehicles
+    vehicle_idx = 1
+    for sv in scenario.values():
+        if "TRACK" not in sv:
+            continue
+        for t in sv["TRACK"]:
+            t["id"] = np.iinfo(np.int16).max - vehicle_idx
+            vehicle_idx += 1
+
+    return scenario
+
+
+def _get_offset_along_path(way_nodes, curr_node):
+    offset = 0
+    for i in range(len(way_nodes) - 1):
+        x1, y1 = way_nodes[i]
+        x2, y2 = way_nodes[i + 1]
+
+        dx, dy = x2 - x1, y2 - y1
+        segment_length = math.sqrt(dx**2 + dy**2)
+        t = ((curr_node[0] - x1) * dx + (curr_node[1] - y1) * dy) / (segment_length**2)
+        if t >= 0 and t <= 1:
+            offset += t * segment_length
+            break
+
+        offset += segment_length
+
+    return offset
+
+
+def _get_vehicle_next_position(track, traffic_lanes, height_map, velocity):
+    remain_move_dist = velocity + np.random.randint(-velocity // 2, velocity // 2)
+    next_x, next_y = None, None
+
+    lane_id = track["lane"]
+    curr_x, curr_y = track["cx"], track["cy"]
+    while next_x is None and next_y is None:
+        curr_lane = traffic_lanes[lane_id]
+        offset = _get_offset_along_path(curr_lane["nodes"], (curr_x, curr_y))
+        remaing_way_length = _get_way_length(curr_lane["nodes"]) - offset
+
+        if remaing_way_length >= remain_move_dist:
+            # Try to move forward along the current lane
+            next_x, next_y, _ = _get_next_node_along_path(
+                curr_lane["nodes"], offset + remain_move_dist
+            )
+        elif len(curr_lane["next"]) > 0:
+            # Try to move to the next lane
+            lane_id = np.random.choice(curr_lane["next"])
+            curr_x, curr_y = traffic_lanes[lane_id]["nodes"][0]
+            remain_move_dist -= remaing_way_length
+        else:
+            logging.warning(
+                "The vehicle {%s} is stuck at the end of the lane {%s}."
+                % (track, curr_lane)
+            )
+            return None
+
+    heading = _get_vehicle_heading(next_x, next_y, curr_lane["nodes"])
+    tilt, cz = _get_vehicle_tilt(next_x, next_y, heading, height_map)
+    return {
+        "id": track["id"],
+        "lane": lane_id,
+        "object_type": 1,
+        "cx": next_x,
+        "cy": next_y,
+        "cz": cz,
+        "heading": heading,
+        "tilt": tilt,
+    }
+
+
+def generate_next_scenario(prev_scenario, traffic_lanes, scene_bevs, velocity):
+    scenario = {}
+    for sk, sv in prev_scenario.items():
+        scenario[sk] = {}
+        if "TRACK" in sv:
+            scenario[sk]["TRACK"] = []
+            for t in sv["TRACK"]:
+                track = _get_vehicle_next_position(
+                    t, traffic_lanes, scene_bevs[sk]["TD_HF"], velocity
+                )
+                if track is not None:
+                    scenario[sk]["TRACK"].append(track)
+        # TODO: if "TLIGHT" in sv: pass
 
     return scenario
 
@@ -1340,22 +1446,26 @@ def _get_traffic_bev_map(tracks, vehicle_bevs, map_size):
     return traffic_bev
 
 
-def get_traffic_bev_maps(scenarios, vehicle_bevs, map_size):
-    traffic_bevs = []
-    for s in scenarios:
-        traffic_bev = {}
-        for sk, sv in s.items():  # sk in ["REST", "FREEWAY"]
-            _bev_map = _get_traffic_bev_map(sv["TRACK"], vehicle_bevs, map_size)
-            for bmk, bmv in _bev_map.items():  # bmk in ["TD_HF", "BU_HF", "INS_BEV"]
-                traffic_bev["%s_%s" % (sk, bmk)] = bmv
+def get_traffic_bev_map(scenario, vehicle_bevs, map_size):
+    traffic_bev = {}
+    for sk, sv in scenario.items():  # sk in ["REST", "FREEWAY"]
+        traffic_bev[sk] = {}
+        bev_maps = _get_traffic_bev_map(sv["TRACK"], vehicle_bevs, map_size)
+        for bmk, bmv in bev_maps.items():  # bmk in ["TD_HF", "BU_HF", "INS_BEV"]
+            # traffic_bev["%s_%s" % (sk, bmk)] = bmv
+            traffic_bev[sk][bmk] = bmv
 
-        traffic_bevs.append(traffic_bev)
-
-    return traffic_bevs
+    return traffic_bev
 
 
 def main(
-    projection_dir, scenario_dir, vehicle_bev_file, manual_fix_file, layers, n_steps
+    projection_dir,
+    scenario_dir,
+    vehicle_bev_file,
+    manual_fix_file,
+    layers,
+    n_steps,
+    velocity,
 ):
     logging.info("Loading Vehicle BEVs ...")
     vehicle_bevs = _get_vehicle_bevs(vehicle_bev_file, 0.5)
@@ -1379,45 +1489,56 @@ def main(
     #     # pickle.dump(traffic_graphs, f)
     #     traffic_graphs = pickle.load(f)
 
-    traffic_graphs = get_traffic_lanes(
+    traffic_lanes = get_traffic_lanes(
         road_networks,
         traffic_graphs,
         get_cfg_values("LANE_WIDTH"),
         get_cfg_values("CENTERLINE_WIDTH"),
     )
     # # Faster Debug
-    # with open("output/traffic_lanes.pkl", "wb") as f:
-    #     pickle.dump(traffic_graphs, f)
-    #     # traffic_graphs = pickle.load(f)
+    # with open("output/traffic_lanes.pkl", "rb") as f:
+    #     # pickle.dump(traffic_lanes, f)
+    #     traffic_lanes = pickle.load(f)
 
     logging.info("Generating Traffic Scenarios ...")
     scenarios = []
     scene_bevs = get_projections(projection_dir, layers, ["TD_HF", "INS_BEV"])
     scenarios.append(
         generate_init_scenario(
-            {k: v["LANE"] for k, v in traffic_graphs.items()},
+            traffic_lanes,
             scene_bevs,
             get_cfg_values("END_NODE_OFFSET"),
             get_cfg_values("OFFSET_STEP"),
         )
     )
-    # TODO: Generate scenarios in the next steps
-    # for i in range(n_steps):
-    #     scenarios.generate_next_scenario(scenarios[-1], scene_bevs)
+    for _ in tqdm(range(n_steps - 1)):
+        scenario = generate_next_scenario(
+            scenarios[-1],
+            traffic_lanes,
+            scene_bevs,
+            velocity,
+        )
+        scenarios.append(scenario)
 
     logging.info("Converting Traffic Scenarios to BEV Maps ...")
-    traffic_bevs = get_traffic_bev_maps(
-        scenarios, vehicle_bevs, get_cfg_values("MAP_SIZE")
-    )
-    for idx, (s, tb) in enumerate(zip(scenarios, traffic_bevs)):
-        os.makedirs(os.path.join(scenario_dir, "%04d" % idx), exist_ok=True)
-        with open(os.path.join(scenario_dir, "%04d" % idx, "Metadata.pkl"), "wb") as fp:
-            pickle.dump(s, fp)
-
-        for k, v in tb.items():
-            Image.fromarray(v).save(
-                os.path.join(scenario_dir, "%04d" % idx, "%s.png" % k)
+    os.makedirs(os.path.join(scenario_dir), exist_ok=True)
+    for idx, scenario in enumerate(tqdm(scenarios)):
+        with open(os.path.join(scenario_dir, "%04d.pkl" % idx), "wb") as fp:
+            pickle.dump(
+                {
+                    "METADATA": scenario,
+                    "VEH_BEVS": vehicle_bevs,
+                },
+                fp,
             )
+        # NOTE: Skip saving the BEV maps due to the super slow IO speed
+        # traffic_bev = get_traffic_bev_map(
+        #     scenario, vehicle_bevs, get_cfg_values("MAP_SIZE")
+        # )
+        # for k, v in traffic_bev.items():
+        #     Image.fromarray(v).save(
+        #         os.path.join(scenario_dir, "%04d" % idx, "%s.png" % k)
+        #     )
 
 
 if __name__ == "__main__":
@@ -1451,6 +1572,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--layers", default="REST, FREEWAY")
     parser.add_argument("--steps", type=int, default=20)
+    parser.add_argument("--velocity", type=int, default=5)
     args = parser.parse_args()
     main(
         args.projection_dir,
@@ -1459,4 +1581,5 @@ if __name__ == "__main__":
         args.manual_fix_file,
         [layer.strip() for layer in args.layers.split(",")],
         args.steps,
+        args.velocity,
     )

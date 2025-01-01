@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-12-27 19:16:36
+# @Last Modified at: 2025-01-01 18:29:26
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -32,6 +32,7 @@ sys.path.append(PROJECT_HOME)
 import extensions.footprint_extruder
 import extensions.voxlib
 import models.gancraft
+import scripts.traffic_scenario_generator
 import utils.datasets
 import utils.helpers
 
@@ -291,28 +292,17 @@ def _clip_height_field(hf, layout_max_height):
 def get_traffic_scenarios(dataset, dataset_dirs):
     if dataset == "CITY_SAMPLE":
         scenario_dir = os.path.join(dataset_dirs["city_sample"], "Scenarios")
-        layers = ["FREEWAY", "REST"]
     elif dataset == "GOOGLE_EARTH":
         raise NotImplementedError
     else:
         raise ValueError("Unknown dataset: %s" % dataset)
 
     scenarios = []
-    for s in sorted(os.listdir(scenario_dir)):
-        with open(os.path.join(scenario_dir, s, "Metadata.pkl"), "rb") as fp:
-            metadata = pickle.load(fp)
+    for f in tqdm(sorted([f for f in os.listdir(scenario_dir) if f.endswith(".pkl")])):
+        with open(os.path.join(scenario_dir, f), "rb") as fp:
+            scenario = pickle.load(fp)
 
-        scenarios.append(
-            {
-                "METADATA": metadata,
-                "PROJECTIONS": _get_projections(
-                    os.path.join(scenario_dir, s),
-                    layers,
-                    ["INS_BEV", "TD_HF", "BU_HF"],
-                ),
-            }
-        )
-
+        scenarios.append(scenario)
     return scenarios
 
 
@@ -565,7 +555,12 @@ def render(
             & (bldg_seg < other_cfg["BLDG_INST_RANGE"][1])
         ]
     )
-    buildings = buildings[buildings % other_cfg["BLDG_MULTIPLIER"] == 0]
+    buildings = buildings[buildings % other_cfg["BLDG_INST_MULTIPLIER"] == 0]
+    # Fix: Roof is visible but the facade is not visible (Hard-coded for CITY_SAMPLE)
+    # bldg_roofs = buildings[buildings % other_cfg["BLDG_MULTIPLIER"] == 1]
+    # bldg_facades0 = bldg_roofs - 1
+    # bldg_facades1 = buildings[buildings % other_cfg["BLDG_MULTIPLIER"] == 0]
+    # buildings = torch.unique(torch.cat([bldg_facades0, bldg_facades1]))
 
     cars = []
     if stats["CAR"] is not None:
@@ -654,8 +649,8 @@ def render_bg(
     blurrer = torchvision.transforms.GaussianBlur(kernel_size=3, sigma=(2, 2))
     _voxel_id = copy.deepcopy(voxel_id)
     # Maps all building instances to the same facade ID
-    _voxel_id[voxel_id >= inst_cfg["BLDG_INST_RANGE"][0]] = inst_cfg["FACADE_CID"]
     _voxel_id[voxel_id >= inst_cfg["CAR_INST_RANGE"][0]] = inst_cfg["ROAD_CID"]
+    _voxel_id[voxel_id >= inst_cfg["BLDG_INST_RANGE"][0]] = inst_cfg["FACADE_CID"]
     # assert (_voxel_id < CONSTANTS["LAYOUT_N_CLASSES"]).all()
     bg_img = torch.zeros(
         1,
@@ -1052,13 +1047,24 @@ def main(
         "City Layout Patch Size (HxW): %s" % (projections["REST"]["TD_HF"].shape,)
     )
 
+    # Generate camera trajectories
+    logging.info("Generating camera poses ...")
+    radius = np.random.randint(128, 512)
+    altitude = np.random.randint(256, 512)
+    logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
+    cam_poses = get_orbit_camera_positions(
+        radius,
+        altitude,
+        get_cfg_value("VOL_SIZE/LAYOUT", dataset),
+        get_cfg_value("N_VIEWPOINTS", dataset),
+    )
+
     # Load the traffic scenarios
     scenarios = []
     if car_model is not None:
+        logging.info("Loading traffic scenarios ...")
         scenarios = get_traffic_scenarios(dataset, dataset_dirs)
-
-    # TODO: Duplicate the scenarios
-    scenarios = scenarios * get_cfg_value("N_VIEWPOINTS")
+        assert len(cam_poses) <= len(scenarios)
 
     # Generate latent codes
     logging.info("Generating latent codes ...")
@@ -1075,18 +1081,6 @@ def main(
     if car_zs is not None:
         assert min(list(car_zs.keys())) >= get_cfg_value("CAR_INST_RANGE", dataset)[0]
         assert max(list(car_zs.keys())) < get_cfg_value("CAR_INST_RANGE", dataset)[1]
-
-    # Generate camera trajectories
-    logging.info("Generating camera poses ...")
-    radius = np.random.randint(128, 512)
-    altitude = np.random.randint(256, 512)
-    logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
-    cam_poses = get_orbit_camera_positions(
-        radius,
-        altitude,
-        get_cfg_value("VOL_SIZE/LAYOUT", dataset),
-        get_cfg_value("N_VIEWPOINTS", dataset),
-    )
 
     # Simply use image center as the patch center
     cy = projections["REST"]["TD_HF"].shape[0] // 2
@@ -1134,9 +1128,15 @@ def main(
     os.makedirs(get_cfg_value("RAYCAST_CACHE_DIR"), exist_ok=True)
     for f_idx, cp in enumerate(tqdm(cam_poses)):
         scenario = scenarios[f_idx] if scenarios else None
+        traffic_projections = None
+        if scenario:
+            traffic_projections = scripts.traffic_scenario_generator.get_traffic_bev_map(
+                scenario["METADATA"], scenario["VEH_BEVS"], projections["REST"]["INS_BEV"].shape
+            )
+
         seg_volume = get_seg_volume(
             projections,
-            scenario["PROJECTIONS"] if scenario else None,
+            traffic_projections,
             cx,
             cy,
             VOL_SIZES,
