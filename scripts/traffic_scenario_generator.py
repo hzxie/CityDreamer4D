@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2024-11-02 15:17:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2025-01-01 18:19:25
+# @Last Modified at: 2025-01-08 19:28:51
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -50,8 +50,8 @@ def get_cfg_values(key):
         "LANE_WIDTH": 14,
         "CENTERLINE_WIDTH": 10,
         "MAP_SIZE": (19600, 19600),
-        "END_NODE_OFFSET": 100,
-        "OFFSET_STEP": 200,
+        "END_NODE_OFFSET": 75,
+        "OFFSET_STEP": 150,
     }
 
     return CFG[key] if key in CFG else cfg.DATASETS.CITY_SAMPLE[key]
@@ -951,7 +951,7 @@ def _is_nodes_reversed(nodes):
         return delta_y > 0
 
 
-def _get_traffic_lanes(road_centers, lane_width):
+def _get_traffic_lanes(road_centers, lane_width, centerline_width):
     lanes = []
     for idx, rc in enumerate(road_centers):
         if _is_nodes_reversed(rc["shtn_nodes"]):
@@ -996,16 +996,20 @@ def _get_traffic_lanes(road_centers, lane_width):
             for j in range(n_nodes):
                 _fwd_lane.append(
                     tuple(
-                        (np.array(nodes[j]) + vectors[j] * lane_width * i).astype(
-                            np.int32
-                        )
+                        (
+                            np.array(nodes[j])
+                            + vectors[j] * lane_width * i
+                            + centerline_width // 2
+                        ).astype(np.int32)
                     )
                 )
                 _bwd_lane.append(
                     tuple(
-                        (np.array(nodes[j]) - vectors[j] * lane_width * i).astype(
-                            np.int32
-                        )
+                        (
+                            np.array(nodes[j])
+                            - vectors[j] * lane_width * i
+                            - centerline_width // 2
+                        ).astype(np.int32)
                     )
                 )
             lanes.append({"way": idx, "nodes": _fwd_lane, "dir": "F", "next": []})
@@ -1134,19 +1138,21 @@ def _connect_intersection_lanes(road_centers, lanes):
 
 
 def _connect_freeway_lanes(traffic_lanes):
+    # TODO
     return traffic_lanes
 
 
 def get_traffic_lanes(road_networks, traffic_graphs, lane_width, centerline_width):
     traffic_lanes = {}
     for tk, tv in traffic_graphs.items():
+        _centerline_width = centerline_width * 3 if tk == "FREEWAY" else centerline_width
         tv["CNTR"] = _get_way_widths(
-            road_networks[tk], tv["CNTR"], lane_width, centerline_width
+            road_networks[tk], tv["CNTR"], lane_width, _centerline_width
         )
         tv["CNTR"] = _get_shortened_road_centers(tv["CNTR"])
 
         # Make sure that each lane has a unique id
-        tfc_lanes = _get_traffic_lanes(tv["CNTR"], lane_width)
+        tfc_lanes = _get_traffic_lanes(tv["CNTR"], lane_width, _centerline_width)
         for lane in tfc_lanes:
             lane["id"] = len(traffic_lanes) + 1
             lane["layer"] = tk
@@ -1307,7 +1313,7 @@ def _get_offset_along_path(way_nodes, curr_node):
 
 
 def _get_vehicle_next_position(track, traffic_lanes, height_map, velocity):
-    remain_move_dist = velocity + np.random.randint(-velocity // 2, velocity // 2)
+    remain_move_dist = velocity + np.random.randint(-velocity, velocity)
     next_x, next_y = None, None
 
     lane_id = track["lane"]
@@ -1450,6 +1456,7 @@ def get_traffic_bev_map(scenario, vehicle_bevs, map_size):
     traffic_bev = {}
     for sk, sv in scenario.items():  # sk in ["REST", "FREEWAY"]
         traffic_bev[sk] = {}
+        # sv["TRACK"] = [t for t in sv["TRACK"] if t["id"] not in [31984, 31985]]
         bev_maps = _get_traffic_bev_map(sv["TRACK"], vehicle_bevs, map_size)
         for bmk, bmv in bev_maps.items():  # bmk in ["TD_HF", "BU_HF", "INS_BEV"]
             # traffic_bev["%s_%s" % (sk, bmk)] = bmv
