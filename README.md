@@ -8,7 +8,7 @@ S-Lab, Nanyang Technological University
 
 ![Counter](https://api.infinitescript.com/badgen/count?name=hzxie/CityDreamer4D)
 [![arXiv](https://img.shields.io/badge/arXiv-2501.00000-b31b1b.svg)](https://arxiv.org/abs/2501.00000)
-[![YouTube](https://img.shields.io/badge/Spotlight%20Video-%23FF0000.svg?logo=YouTube&logoColor=white)](https://youtu.be/te4zinLTYz0)
+[![YouTube](https://img.shields.io/badge/Spotlight%20Video-%23FF0000.svg?logo=YouTube&logoColor=white)](https://youtu.be/PF6W0Nd27Tk)
 
 ![CityDreamer4D Forward Cam - Daytime](https://github.com/user-attachments/assets/14e63958-ab55-409a-87f7-1d359a8f5dea)
 
