@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-05 20:14:54
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2025-01-16 04:19:25
+# @Last Modified at: 2025-01-16 04:40:04
 # @Email:  root@haozhexie.com
 
 from easydict import EasyDict
@@ -44,7 +44,7 @@ cfg.DATASETS.CITY_SAMPLE.MAX_HEIGHT              = 2560
 cfg.DATASETS.CITY_SAMPLE.CITIES                  = [i for i in range(11)]
 cfg.DATASETS.CITY_SAMPLE.N_VIEWS                 = 3000
 cfg.DATASETS.CITY_SAMPLE.N_CLASSES               = 9
-cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"NULL": 0, "ROAD": 1, "FREEWAY": 2,"CAR": 3, "WATER": 4, "SKY": 5, "ZONE": 6, "SIDEWALK": "7", "BLDG_FACADE": 8, "BLDG_ROOF": 9}
+cfg.DATASETS.CITY_SAMPLE.CLASSES                 = {"NULL": 0, "ROAD": 1, "FREEWAY": 2, "CAR": 3, "WATER": 4, "SKY": 5, "ZONE": 6, "SIDEWALK": "7", "BLDG_FACADE": 8}
 cfg.DATASETS.CITY_SAMPLE.N_MIN_PIXELS            = 64
 cfg.DATASETS.CITY_SAMPLE.MIN_INSTANCE            = 100
 cfg.DATASETS.CITY_SAMPLE.CITY_STYLES             = ["Day"]  # ["Day", "Night"]

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-11-03 18:23:34
+# @Last Modified at: 2025-01-16 06:03:06
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -60,8 +60,9 @@ def get_cfg_value(key):
         "WATER": 4,
         "SKY": 5,
         "ZONE": 6,
-        "BLDG_FACADE": 7,
-        "BLDG_ROOF": 8,
+        "SIDEWALK": 7,
+        "BLDG_FACADE": 8,
+        "BLDG_ROOF": 9,
     }
     if key == "CLASSES":
         return CLASSES
@@ -83,6 +84,7 @@ def get_cfg_value(key):
 
 def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
     HOU_SCALE = 4
+    assert HOU_SCALE == scale
     # The constants defined in HOU_CLASSES only used in this function.
     HOU_CLASSES = {
         "ROAD": 1,
@@ -90,19 +92,17 @@ def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
         "FWY_PILLAR": 3,
         "FWY_BARRIER": 4,
         "ZONE": 5,
-        # The following classes are not appeared in the Houdini export
-        # "NULL": 0,
-        # "BLDG_FACADE": 6,
-        # "BLDG_ROOF": 7,
+        "SIDEWALK": 6,
     }
     HOU_INV_INDEX = {v: k for k, v in HOU_CLASSES.items()}
     HOU_SCALES = {
         "ROAD": int(2 * HOU_SCALE),
         "FWY_DECK": int(2 * HOU_SCALE),
         "FWY_PILLAR": int(1 * HOU_SCALE),
-        "FWY_BARRIER": int(0.25 * HOU_SCALE),
+        "FWY_BARRIER": int(0.5 * HOU_SCALE),
         "CAR": int(0.25 * HOU_SCALE),
         "ZONE": int(2 * HOU_SCALE),
+        "SIDEWALK": int(0.5 * HOU_SCALE),
         "BLDG_FACADE": int(2 * HOU_SCALE),
     }
 
@@ -144,7 +144,7 @@ def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
             points[rest_rows], map_size, HOU_INV_INDEX, classes, HOU_SCALES, inst_ranges
         ),
     }
-    # projections["REST"] = _fill_projection_holes(projections["REST"])
+    logging.info("Fixing projection holes ...")
     projections["REST"] = _get_water_areas(projections["REST"], classes)
     return projections
 
@@ -193,12 +193,21 @@ def _get_projection(points, map_size, hou_inv_idx, classes, scales, inst_ranges)
 
 
 def _get_water_areas(projection, classes):
-    # The rest areas are assigned as the water areas
-    water_area = projection["INS_BEV"] == classes["NULL"]
+    null_area = projection["INS_BEV"] == classes["NULL"]
+    _, _, water_area, _ = cv2.floodFill(null_area.astype(np.uint8), None, (0, 0), 1)
+    water_area = np.where(water_area[1:-1, 1:-1] == 1)
     projection["INS_BEV"][water_area] = classes["WATER"]
-    # Set water plane height to 1 [MAGIC NUMBER]
+    # Set water plane height to 1 (MAGIC NUMBER)
     projection["TD_HF"][water_area] = 1
     projection["BU_HF"][water_area] = 0
+
+    null_area = projection["INS_BEV"] == classes["NULL"]
+    null_area = np.where(null_area)
+    projection["INS_BEV"][null_area] = classes["ROAD"]
+    # Set road plane height to 14 (MAGIC NUMBER)
+    projection["TD_HF"][null_area] = 14
+    projection["BU_HF"][null_area] = 13
+
     return projection
 
 

@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2025-01-16 04:25:30
+# @Last Modified at: 2025-01-16 04:38:58
 # @Email:  root@haozhexie.com
 
 import json
@@ -577,12 +577,12 @@ class CitySampleCarDataset(CitySampleDataset):
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
         self.semantic_classes = {}
         # Mask the rest of the classes
-        for c in ["ROAD", "FREEWAY", "WATER", "SKY", "ZONE"]:
-            self.semantic_classes[c] = {
+        for k, v in dt_cfg.CLASSES.items():
+            if k == "CAR":
+                continue
+            self.semantic_classes[k] = {
                 "smtc": 0,
-                "cond": {
-                    "range": dt_cfg.CLASSES[c],
-                },
+                "cond": {"range": v},
             }
         self.semantic_classes["BLDG"] = {
             "smtc": 0,
