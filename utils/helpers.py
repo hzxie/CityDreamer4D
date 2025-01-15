@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:25:10
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-07-16 20:22:10
+# @Last Modified at: 2025-01-15 19:45:33
 # @Email:  root@haozhexie.com
 
 import numpy as np
@@ -42,7 +42,7 @@ def static_vars(**kwargs):
 def get_seg_map_palette():
     palatte = np.array([[i, i, i] for i in range(256)])
     # fmt: off
-    palatte[:9] = np.array(
+    palatte[:10] = np.array(
         [
             [0, 0, 0],       # empty        -> black (ONLY used in voxel)
             [96, 0, 0],      # road         -> red
@@ -51,6 +51,7 @@ def get_seg_map_palette():
             [0, 96, 96],     # water        -> cyan
             [0, 0, 96],      # sky          -> blue
             [96, 96, 96],    # ground       -> gray
+            [255, 0, 0],     # sidewalk     -> red
             [96, 0, 96],     # bldg. facade -> magenta
             [255, 0, 255],   # bldg. roof   -> lime yellow
         ]
@@ -61,7 +62,7 @@ def get_seg_map_palette():
 
 @static_vars(palatte=get_seg_map_palette())
 def get_seg_map(seg_map):
-    if np.max(seg_map) >= 9:
+    if np.max(seg_map) >= 10:
         return get_ins_seg_map(seg_map)
 
     seg_map = Image.fromarray(seg_map.astype(np.uint8))
@@ -74,8 +75,7 @@ def get_ins_seg_map_palette(legacy_palette):
     # Make sure that the roof colors are similar to the corresponding facade colors.
     # The odd and even indexes are reserved for roof and facade, respectively.
     palatte0 = np.random.randint(256, size=(MAX_N_INSTANCES, 3))
-    # palatte1 = (255 - palatte0) // 50  + palatte0
-    palatte1 = palatte0 - 2
+    palatte1 = palatte0 - 32
     palatte1[palatte1 < 0] = 0
 
     palatte = np.concatenate((palatte0, palatte1), axis=1)

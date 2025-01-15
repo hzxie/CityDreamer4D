@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-04-06 10:29:53
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2024-10-22 20:47:54
+# @Last Modified at: 2025-01-16 04:25:30
 # @Email:  root@haozhexie.com
 
 import json
@@ -505,27 +505,33 @@ class CitySampleBuildingDataset(CitySampleDataset):
         super(CitySampleBuildingDataset, self).__init__(cfg, split, inst="BLDG")
 
         dt_cfg = cfg.DATASETS.CITY_SAMPLE
-        self.semantic_classes = {
-            "BLDG_FACADE": {
-                "smtc": dt_cfg.CLASSES["BLDG_FACADE"],
-                "cond": {
-                    "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
-                    "cond": lambda x: x % 4 == 0,
-                },
-            },
-            "BLDG_ROOF": {
-                "smtc": dt_cfg.CLASSES["BLDG_ROOF"],
-                "cond": {
-                    "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
-                    "cond": lambda x: x % 4 == 1,
-                },
-            },
-            "CAR": {
+        # Mask the rest of the classes
+        for k, v in dt_cfg.CLASSES.items():
+            self.semantic_classes[k] = {
                 "smtc": 0,
-                "cond": {
-                    "range": (dt_cfg.CAR.INS_RANGE[0], dt_cfg.CAR.INS_RANGE[1]),
-                },
-            },
+                "cond": {"range": v},
+            }
+        self.semantic_classes["CAR"] = {
+            "smtc": 0,
+            "cond": {
+                "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
+                "cond": lambda x: x % 4 == 1,
+            }
+        }
+        # Only keep the BLDG_FACADE and BLDG_ROOF classes
+        self.semantic_classes["BLDG_FACADE"] = {
+            "smtc": 1,
+            "cond": {
+                "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
+                "cond": lambda x: x % 4 == 0,
+            }
+        }
+        self.semantic_classes["BLDG_ROOF"] = {
+            "smtc": 2,
+            "cond": {
+                "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
+                "cond": lambda x: x % 4 == 1,
+            }
         }
         self.transforms = self._get_data_transform(
             split,
