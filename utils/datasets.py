@@ -516,7 +516,7 @@ class CitySampleBuildingDataset(CitySampleDataset):
             "cond": {
                 "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 "cond": lambda x: x % 4 == 1,
-            }
+            },
         }
         # Only keep the BLDG_FACADE and BLDG_ROOF classes
         self.semantic_classes["BLDG_FACADE"] = {
@@ -524,14 +524,14 @@ class CitySampleBuildingDataset(CitySampleDataset):
             "cond": {
                 "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 "cond": lambda x: x % 4 == 0,
-            }
+            },
         }
         self.semantic_classes["BLDG_ROOF"] = {
             "smtc": 2,
             "cond": {
                 "range": (dt_cfg.BLDG.INS_RANGE[0], dt_cfg.BLDG.INS_RANGE[1]),
                 "cond": lambda x: x % 4 == 1,
-            }
+            },
         }
         self.transforms = self._get_data_transform(
             split,

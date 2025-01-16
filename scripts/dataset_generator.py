@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2025-01-16 06:03:06
+# @Last Modified at: 2025-01-16 21:16:54
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -424,16 +424,17 @@ def get_unambiguous_seg_mask(
     # Map NULL to WATER
     if "SKY" in classes:
         ins_seg_map[ins_seg_map == 0] = classes["SKY"]
+    # Map SIDEWALK to ZONE
+    if "SIDEWALK" in classes:
+        ins_seg_map[ins_seg_map == classes["SIDEWALK"]] = classes["ZONE"]
 
     # NOTE: In ins_seg_map, 4n and 4n+1 denote building facade and roof, respectively.
     #       In est_seg_map, 7 and 8 denote building facade and roof, respectively.
+    assert classes["BLDG_FACADE"] == 8 and classes["BLDG_ROOF"] == 9
+
     ins_seg_map[ins_seg_map >= car_inst_range[0]] = classes["CAR"]
-    ins_seg_map[(ins_seg_map >= bldg_inst_range[0]) & (ins_seg_map % 4 == 0)] = classes[
-        "BLDG_FACADE"
-    ]
-    ins_seg_map[(ins_seg_map >= bldg_inst_range[0]) & (ins_seg_map % 4 == 1)] = classes[
-        "BLDG_ROOF"
-    ]
+    ins_seg_map[(ins_seg_map >= bldg_inst_range[0]) & (ins_seg_map % 4 == 0)] = 7
+    ins_seg_map[(ins_seg_map >= bldg_inst_range[0]) & (ins_seg_map % 4 == 1)] = 8
     return ins_seg_map == est_seg_map
 
 

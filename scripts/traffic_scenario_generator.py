@@ -1145,7 +1145,9 @@ def _connect_freeway_lanes(traffic_lanes):
 def get_traffic_lanes(road_networks, traffic_graphs, lane_width, centerline_width):
     traffic_lanes = {}
     for tk, tv in traffic_graphs.items():
-        _centerline_width = centerline_width * 3 if tk == "FREEWAY" else centerline_width
+        _centerline_width = (
+            centerline_width * 3 if tk == "FREEWAY" else centerline_width
+        )
         tv["CNTR"] = _get_way_widths(
             road_networks[tk], tv["CNTR"], lane_width, _centerline_width
         )

@@ -1130,8 +1130,12 @@ def main(
         scenario = scenarios[f_idx] if scenarios else None
         traffic_projections = None
         if scenario:
-            traffic_projections = scripts.traffic_scenario_generator.get_traffic_bev_map(
-                scenario["METADATA"], scenario["VEH_BEVS"], projections["REST"]["INS_BEV"].shape
+            traffic_projections = (
+                scripts.traffic_scenario_generator.get_traffic_bev_map(
+                    scenario["METADATA"],
+                    scenario["VEH_BEVS"],
+                    projections["REST"]["INS_BEV"].shape,
+                )
             )
 
         seg_volume = get_seg_volume(
