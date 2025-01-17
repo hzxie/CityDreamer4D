@@ -15,7 +15,14 @@ S-Lab, Nanyang Technological University
 
 ## Changelog 🔥
 
+- [2025/01/16] The CityTopia dataset is released.
 - [2025/01/15] The repo is created.
+
+## Datasets
+
+- [OSM](https://gateway.infinitescript.com/s/OSM)
+- [GoogleEarth](https://gateway.infinitescript.com/s/GoogleEarth)
+- [CityTopia](https://gateway.infinitescript.com/s/CityTopia)
 
 ## Cite this work 📝
 
