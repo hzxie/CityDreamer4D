@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-12-22 15:10:13
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2025-01-16 21:16:54
+# @Last Modified at: 2025-02-01 19:50:00
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -118,6 +118,8 @@ def get_projections(city_dir, map_size, z_offset, scale, classes, inst_ranges):
     points[:, :2] -= 1
     # Make all the point coordinates positive at z-axis
     points[:, 2] += z_offset  # - 1
+    # Move sidewalk points to 0.2 meters above the road
+    points[points[:, 3] == HOU_CLASSES["SIDEWALK"], 2] = 15
 
     # Separate the points into three categories: CAR, FWY, and REST
     car_rows = (points[:, 3] >= inst_ranges["CAR"][0]) & (
@@ -563,21 +565,21 @@ def main(data_dir, seg_map_file_pattern, img_size, is_debug):
                 # Change the order of channels for efficiency
                 raycasting["depth2"] = raycasting["depth2"].permute(1, 2, 0, 3, 4)
                 raycasting = {k: v.cpu().numpy() for k, v in raycasting.items()}
+                bev_map_center = (bev_map_bbox["BR"] + bev_map_bbox["TL"]) / 2 + 0.5
+                raycasting["img_center"] = {
+                    "cx": int(bev_map_center[0]),
+                    "cy": int(bev_map_center[1]),
+                }
+                raycasting["mask"] = get_unambiguous_seg_mask(
+                    raycasting["voxel_id"][:, :, 0, 0].copy(),
+                    est_seg_map,
+                    get_cfg_value("BLDG_INST_RANGE"),
+                    get_cfg_value("CAR_INST_RANGE"),
+                    get_cfg_value("CLASSES"),
+                )
                 with open(
                     os.path.join(raycasting_dir, "%04d.pkl" % int(r["id"])), "wb"
                 ) as ofp:
-                    bev_map_center = (bev_map_bbox["BR"] + bev_map_bbox["TL"]) / 2 + 0.5
-                    raycasting["img_center"] = {
-                        "cx": int(bev_map_center[0]),
-                        "cy": int(bev_map_center[1]),
-                    }
-                    raycasting["mask"] = get_unambiguous_seg_mask(
-                        raycasting["voxel_id"][:, :, 0, 0].copy(),
-                        est_seg_map,
-                        get_cfg_value("BLDG_INST_RANGE"),
-                        get_cfg_value("CAR_INST_RANGE"),
-                        get_cfg_value("CLASSES"),
-                    )
                     pickle.dump(raycasting, ofp)
 
             # Empty CUDA cache
