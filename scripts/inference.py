@@ -4,7 +4,7 @@
 # @Author: Haozhe Xie
 # @Date:   2023-05-31 15:01:28
 # @Last Modified by: Haozhe Xie
-# @Last Modified at: 2025-01-01 18:29:26
+# @Last Modified at: 2025-08-27 04:51:39
 # @Email:  root@haozhexie.com
 
 import argparse
@@ -557,9 +557,9 @@ def render(
     )
     buildings = buildings[buildings % other_cfg["BLDG_INST_MULTIPLIER"] == 0]
     # Fix: Roof is visible but the facade is not visible (Hard-coded for CITY_SAMPLE)
-    # bldg_roofs = buildings[buildings % other_cfg["BLDG_MULTIPLIER"] == 1]
+    # bldg_roofs = buildings[buildings % other_cfg["BLDG_INST_MULTIPLIER"] == 1]
     # bldg_facades0 = bldg_roofs - 1
-    # bldg_facades1 = buildings[buildings % other_cfg["BLDG_MULTIPLIER"] == 0]
+    # bldg_facades1 = buildings[buildings % other_cfg["BLDG_INST_MULTIPLIER"] == 0]
     # buildings = torch.unique(torch.cat([bldg_facades0, bldg_facades1]))
 
     cars = []
@@ -1049,8 +1049,16 @@ def main(
 
     # Generate camera trajectories
     logging.info("Generating camera poses ...")
-    radius = np.random.randint(128, 512)
-    altitude = np.random.randint(256, 512)
+    radius = (
+        np.random.randint(128, 512)
+        if dataset == "GOOGLE_EARTH"
+        else np.random.randint(1024, 2048)
+    )
+    altitude = (
+        np.random.randint(256, 512)
+        if dataset == "GOOGLE_EARTH"
+        else np.random.randint(1024, 2048)
+    )
     logging.info("Radius = %d, Altitude = %s" % (radius, altitude))
     cam_poses = get_orbit_camera_positions(
         radius,
@@ -1218,10 +1226,14 @@ def main(
             IMG_CFG,
             {
                 "BLDG_INST_RANGE": get_cfg_value("BLDG_INST_RANGE", dataset),
-                "BLDG_MULTIPLIER": get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
+                "BLDG_INST_MULTIPLIER": get_cfg_value("BLDG_INST_MULTIPLIER", dataset),
                 "ROAD_CID": get_cfg_value("CLASSES", dataset)["ROAD"],
-                "FACADE_CID": get_cfg_value("CLASSES", dataset)["BLDG_FACADE"],
-                "ROOF_CID": get_cfg_value("CLASSES", dataset)["BLDG_ROOF"],
+                "FACADE_CID": get_cfg_value("CLASSES", dataset)["BLDG_FACADE"]
+                if dataset == "GOOGLE_EARTH"
+                else 1,
+                "ROOF_CID": get_cfg_value("CLASSES", dataset)["BLDG_ROOF"]
+                if dataset == "GOOGLE_EARTH"
+                else 2,
                 "ROOF_OFFSET": get_cfg_value("BLDG_ROOF_OFFSET", dataset),
                 "CAR_INST_RANGE": get_cfg_value("CAR_INST_RANGE", dataset),
                 "N_CAR_CLASSES": get_cfg_value("N_CAR_CLASSES", dataset) - 1,
