@@ -15,13 +15,15 @@ S-Lab, Nanyang Technological University
 ![CityDreamer4D Forward Cam - Daytime](https://github.com/user-attachments/assets/14e63958-ab55-409a-87f7-1d359a8f5dea)
 
 
-## Changelog 🔥
+## Changelog🔥
 
-- [2025/08/27] The source code is released.
-- [2025/01/16] The CityTopia dataset is released.
-- [2025/01/15] The repo is created.
+- [2025/09/01] Added training and inference instructions.
+- [2025/08/27] Released source code.
+- [2025/08/24] CityDreamer4D accepted by TPAMI.
+- [2025/01/16] Released the CityTopia dataset.
+- [2025/01/15] Repository created.
 
-## Cite this work 📝
+## Cite this work📝
 
 ```
 @article{xie2025citydreamer4d,
@@ -31,21 +33,21 @@ S-Lab, Nanyang Technological University
                Hong, Fangzhou and 
                Liu, Ziwei},
   journal   = {IEEE Transactions on Pattern Analysis and Nachine Intelligence},
+  doi       = {10.1109/TPAMI.2025.3603078},
   year      = {2025}
 }
 ```
 
-## Datasets
+## Datasets📚
 
 - [OSM](https://gateway.infinitescript.com/s/OSM)
 - [GoogleEarth](https://gateway.infinitescript.com/s/GoogleEarth)
 - [CityTopia](https://gateway.infinitescript.com/s/CityTopia)
 
-## Pretrained Models
+## Pretrained Models🧠
 
 ### GoogleEarth
 
-- [Unbounded Layout Generator](https://gateway.infinitescript.com/?f=LayoutGen.pth)
 - [Background Stuff Generator](https://gateway.infinitescript.com/?f=CityDreamer-Bgnd.pth)
 - [Building Instance Generator](https://gateway.infinitescript.com/?f=CityDreamer-Fgnd.pth)
 
@@ -53,8 +55,9 @@ S-Lab, Nanyang Technological University
 
 - [Background Stuff Generator](https://gateway.infinitescript.com/?f=CityDreamer4D-BG.pth)
 - [Building Instance Generator](https://gateway.infinitescript.com/?f=CityDreamer4D-BLDG.pth)
+- [Vehicle Instance Generator](https://gateway.infinitescript.com/?f=CityDreamer4D-CAR.pth)
 
-## Installation 📥
+## Installation⚙️
 
 Assume that you have installed [CUDA](https://developer.nvidia.com/cuda-downloads) and [PyTorch](https://pytorch.org) in your Python (or Anaconda) environment.  
 
@@ -84,6 +87,112 @@ do
 done
 ```
 
-## License
+## Inference🚀
+
+For the **GoogleEarth** dataset, 24 GB of VRAM is sufficient (tested on an RTX 3090).
+For the **CityTopia** dataset, **at least 48 GB of VRAM** is required (tested on an A6000).
+
+**CityTopia-style Generation**
+
+To generate a CityTopia-style city, first download the CityTopia dataset (CityTopia-Annotations-1080p.zip). Then run:
+
+```bash
+python3 scripts/dataset_generator.py --data_dir /path/to/citytopia
+python3 scripts/traffic_scenario_generator.py --city City01 --steps 120
+python3 scripts/inference.py \
+  --dataset CITY_SAMPLE \
+  --city_sample_dir /path/to/citytopia/City01 \
+  --bg_ckpt /path/to/bg-ckpt.pth \
+  --bldg_ckpt /path/to/bldg-ckpt.pth \
+  --car_ckpt /path/to/car-ckpt.pth
+```
+
+**GoogleEarth-style Generation**
+
+The script also supports generating cities in GoogleEarth style. Make sure you have downloaded the OSM dataset before running:
+
+```bash
+python3 scripts/inference.py \
+  --dataset GOOGLE_EARTH \
+  --city_osm_dir /path/to/osm \
+  --bg_ckpt /path/to/bg-ckpt.pth \
+  --bldg_ckpt /path/to/bldg-ckpt.pth
+```
+
+The generated video will be saved at `output/rendering.mp4`.
+
+## Training🏋️
+
+This section provides instructions for training on the **CityTopia** dataset. For training with the **GoogleEarth** dataset, please refer to the [CityDreamer README](https://github.com/hzxie/CityDreamer).
+
+### Dataset Preparation
+
+To generate a CityTopia-style city, first download the CityTopia dataset (CityTopia-Annotations-1080p.zip). Then run:
+
+```bash
+python3 scripts/dataset_generator.py --data_dir /path/to/citytopia
+```
+
+### Background Stuff Generator Training
+
+#### Update `config.py`
+
+Make sure the config matches the following lines.
+
+```python
+cfg.CONST.DATASET                                = "CITY_SAMPLE"
+cfg.NETWORK.GANCRAFT.SKY_ENABLED                 = True
+```
+
+#### Launch Training 🚀
+
+```bash
+torchrun --nnodes=1 --nproc_per_node=8 --standalone run.py
+```
+
+### Building Instance Generator Training
+
+#### Update `config.py`
+
+Make sure the config matches the following lines.
+
+```python
+cfg.CONST.DATASET                                = "CITY_SAMPLE"
+cfg.NETWORK.GANCRAFT.STYLE_DIM                   = 256
+cfg.NETWORK.GANCRAFT.ENCODER                     = "LOCAL"
+cfg.NETWORK.GANCRAFT.ENCODER_OUT_DIM             = 64
+cfg.NETWORK.GANCRAFT.POS_EMD                     = "SIN_COS"
+cfg.NETWORK.GANCRAFT.POS_EMD_INCUDE_CORDS        = False
+cfg.TRAIN.GANCRAFT.REC_LOSS_FACTOR               = 0
+cfg.TRAIN.GANCRAFT.PERCEPTUAL_LOSS_FACTOR        = 0
+cfg.TEST.GANCRAFT.CROP_SIZE                      = (360, 180)
+```
+
+#### Launch Training 🚀
+
+```bash
+torchrun --nnodes=1 --nproc_per_node=8 --standalone run.py
+```
+
+### Vehicle Instance Generator Training
+
+#### Update `config.py`
+
+Make sure the config matches the following lines.
+
+```python
+cfg.CONST.DATASET                                = "CITY_SAMPLE"
+cfg.NETWORK.GANCRAFT.STYLE_DIM                   = 256
+cfg.NETWORK.GANCRAFT.POS_EMD                     = "SIN_COS"
+cfg.TEST.GANCRAFT.CROP_SIZE                      = (360, 180)
+```
+
+#### Launch Training 🚀
+
+```bash
+torchrun --nnodes=1 --nproc_per_node=8 --standalone run.py
+```
+
+## License📄
 
 This project is licensed under [NTU S-Lab License 1.0](https://github.com/hzxie/CityDreamer4D/blob/master/LICENSE). Redistribution and use should follow this license.
