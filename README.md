@@ -32,9 +32,12 @@ S-Lab, Nanyang Technological University
                Chen, Zhaoxi and 
                Hong, Fangzhou and 
                Liu, Ziwei},
-  journal   = {IEEE Transactions on Pattern Analysis and Nachine Intelligence},
+  journal   = {IEEE Transactions on Pattern Analysis and Machine Intelligence},
+  volume    = {48},
+  number    = {1},
+  pages     = {312-328},
   doi       = {10.1109/TPAMI.2025.3603078},
-  year      = {2025}
+  year      = {2026}
 }
 ```
 
