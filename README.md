@@ -43,9 +43,9 @@ S-Lab, Nanyang Technological University
 
 ## Datasets📚
 
-- [OSM](https://gateway.infinitescript.com/s/OSM)
-- [GoogleEarth](https://gateway.infinitescript.com/s/GoogleEarth)
-- [CityTopia](https://gateway.infinitescript.com/s/CityTopia)
+- [OSM](https://gateway.infinitescript.com/?f=OSM)
+- [GoogleEarth](https://gateway.infinitescript.com/?f=GoogleEarth)
+- [CityTopia](https://gateway.infinitescript.com/?f=CityTopia)
 
 ## Pretrained Models🧠
 
